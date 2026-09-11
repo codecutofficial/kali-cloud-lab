@@ -1,0 +1,115 @@
+name: Kali Linux (web terminal via Cloudflare)
+
+# Boots a Kali container on the runner, serves a browser terminal (ttyd) that
+# drops straight into Kali, and exposes it with a Cloudflare quick tunnel
+# (no account, no secrets). The public https link + login are written to the
+# run's SUMMARY tab (top of the run page) and echoed in the logs.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      full_toolset:
+        description: "Install the big Kali toolset (kali-linux-headless, ~5-10 min). Off = light, fast toolset."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  kali:
+    runs-on: ubuntu-latest
+    # GitHub caps a job at 6h; the box dies when the job ends. Cancel to stop sooner.
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Kali container + install tools
+        run: |
+          set -euo pipefail
+          docker pull kalilinux/kali-rolling
+          docker run -d --name kali --network host -v "$PWD":/work -w /work \
+            kalilinux/kali-rolling sleep infinity
+          docker exec kali bash -c "apt-get update"
+          if [ "${{ github.event.inputs.full_toolset }}" = "true" ]; then
+            echo "Installing kali-linux-headless (large)..."
+            docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y kali-linux-headless"
+          else
+            echo "Installing light toolset..."
+            docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              nmap netcat-traditional curl wget git vim less python3 python3-pip \
+              iproute2 iputils-ping dnsutils net-tools whois"
+          fi
+          echo "Kali:"; docker exec kali bash -c "grep PRETTY_NAME /etc/os-release"
+
+      - name: Install ttyd + cloudflared (static binaries)
+        run: |
+          set -euo pipefail
+          sudo wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd
+          sudo chmod +x /usr/local/bin/ttyd
+          sudo wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          ttyd --version
+          cloudflared --version
+
+      - name: Launch web terminal + public tunnel  (LINK IS IN THE SUMMARY TAB)
+        run: |
+          set -uo pipefail
+          PASS=$(openssl rand -hex 10)
+
+          # Web terminal -> opens a Kali root shell for each visitor
+          ttyd --writable -p 7681 -c "kali:${PASS}" docker exec -it kali bash > /tmp/ttyd.log 2>&1 &
+          TTYD_PID=$!
+          sleep 3
+
+          # Public HTTPS tunnel (quick tunnel: no login, no token)
+          cloudflared tunnel --no-autoupdate --url http://localhost:7681 > /tmp/cf.log 2>&1 &
+          CF_PID=$!
+
+          # Wait for the trycloudflare URL to appear
+          URL=""
+          for i in $(seq 1 45); do
+            URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1 || true)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+
+          {
+            echo "# 🐉 Your Kali Linux is live"
+            echo ""
+            if [ -n "$URL" ]; then
+              echo "## Open in any browser, from anywhere:"
+              echo ""
+              echo "# $URL"
+              echo ""
+              echo "**Login** — user: \`kali\`  ·  password: \`${PASS}\`"
+              echo ""
+              echo "You land in the Kali root shell. Your repo is mounted at \`/work\`."
+            else
+              echo "⚠️ Tunnel URL didn't appear. cloudflared log:"
+              echo '```'
+              cat /tmp/cf.log || true
+              echo '```'
+            fi
+            echo ""
+            echo "---"
+            echo "_Ephemeral: auto-stops at the 6h limit. Cancel this run to stop sooner._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::notice title=Kali link::${URL}  (login: kali / ${PASS})"
+          echo "=================================================="
+          echo " KALI LINK : ${URL}"
+          echo " LOGIN     : kali / ${PASS}"
+          echo "=================================================="
+
+          # Hold the job open so the link keeps working (stay under the 6h cap).
+          END=$((SECONDS + 21000))
+          while [ $SECONDS -lt $END ]; do
+            if ! kill -0 "$CF_PID" 2>/dev/null; then echo "cloudflared exited:"; cat /tmp/cf.log; exit 1; fi
+            if ! kill -0 "$TTYD_PID" 2>/dev/null; then echo "ttyd exited:"; cat /tmp/ttyd.log; exit 1; fi
+            sleep 10
+          done
+          echo "Reached time limit; shutting down."

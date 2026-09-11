@@ -1,59 +1,53 @@
 # kali-cloud-lab
 
-Spin up a **temporary Kali Linux box on GitHub Actions** and get a **public link** (SSH + browser terminal) to use it from anywhere — powered by [`mxschmitt/action-tmate`](https://github.com/mxschmitt/action-tmate).
+Spin up a **temporary Kali Linux box on GitHub Actions** and get a **public browser link** to use it from anywhere — a web terminal (`ttyd`) exposed through a **Cloudflare quick tunnel** (no account, no secrets, no SSH client needed).
 
-The box is ephemeral: a GitHub Actions job is capped at **6 hours**, then everything is destroyed. This is a throwaway lab, not persistent hosting.
+Ephemeral by design: a GitHub Actions job is capped at **6 hours**, then everything is destroyed. This is a throwaway lab, not persistent hosting.
 
 ---
 
 ## How to use it
 
-1. Go to the **Actions** tab of this repo.
-2. It also runs automatically on every push to `main`.
-3. To start one manually: **Actions → "Kali Linux (tmate remote access)" → Run workflow**.
-   - Optional toggle: **full_toolset** installs `kali-linux-headless` (big, ~5–10 min). Off by default (a light, fast toolset).
-4. Open the running job → the **Start tmate session** step. It prints, and refreshes every few seconds:
+1. It runs automatically on every push to `main`. To start one manually:
+   **Actions → "Kali Linux (web terminal via Cloudflare)" → Run workflow**.
+   - Optional toggle **full_toolset** installs `kali-linux-headless` (big, ~5–10 min). Off by default.
+2. Open the running job. When it reaches **Launch web terminal + public tunnel**, go to the run's **Summary** tab (top of the run page). It shows:
    ```
-   SSH: ssh <random>@nyc1.tmate.io
-   Web: https://tmate.io/t/<random>
+   🐉 Your Kali Linux is live
+   Open in any browser, from anywhere:
+       https://<random-words>.trycloudflare.com
+   Login — user: kali · password: <shown here>
    ```
-5. Click the **Web** link → a terminal opens in your browser (works on any device).
-6. In that terminal, type:
-   ```
-   kali
-   ```
-   That drops you into the **Kali Linux** root shell. Your repo files are mounted at `/work` inside it.
+3. Open that link, enter the login, and you're in the **Kali root shell**. Your repo is mounted at `/work`.
+
+No scrolling through logs — the link is in the **Summary tab** and also echoed at the bottom of that step.
 
 ## Ending the box early
 
-- Run `touch /continue` inside the session, **or**
-- Cancel the workflow run from the Actions tab.
-
-Otherwise it stops on its own at the 6-hour limit.
+- Cancel the workflow run from the Actions tab. Otherwise it auto-stops at ~6h.
 
 ## Installing more tools
 
-Inside the Kali shell:
+In the Kali shell:
 ```bash
 apt-get update
-apt-get install -y <tool>          # e.g. metasploit-framework, sqlmap, gobuster
-# or a big metapackage:
-apt-get install -y kali-linux-headless
+apt-get install -y metasploit-framework sqlmap gobuster   # etc.
+apt-get install -y kali-linux-headless                    # big metapackage
 ```
 
 ---
 
 ## ⚠️ Read this
 
-- **Public repo = public link.** While the job runs, the tmate link sits in **publicly viewable logs**, so anyone who sees it can connect to the shell. If that matters to you:
-  - Set `limit-access-to-actor: true` in `.github/workflows/kali-tmate.yml` (restricts SSH to *your* GitHub-registered SSH keys), **or**
-  - Make the repo **private**.
-- **GitHub Actions Terms.** Actions is intended for building/testing/deploying the repo's own software. Using it as a general remote-access host is a gray area under GitHub's Acceptable Use Policies. Keep this to legitimate, authorized use (learning, CTFs, security research on systems you're allowed to test). Don't use it to attack third parties or for anything you're not authorized to do.
-- **It's temporary.** Nothing persists between runs except what you commit to the repo.
+- **The link is unauthenticated beyond the basic-auth login shown in the run.** Because this repo is **public**, that link and its password sit in **publicly viewable logs/summary** while the job runs — so treat it as exposed. If that matters:
+  - Make the repo **private**, or
+  - Remove the tunnel and use SSH-key-gated access instead.
+- **GitHub Actions Terms.** Actions is meant for building/testing/deploying the repo's own software; using it as a general remote-access host is a gray area under GitHub's Acceptable Use Policies. Keep this to legitimate, authorized use — learning, CTFs, and security testing on systems **you are allowed to test**. Don't point it at third parties.
+- **Nothing persists** between runs except what you commit to the repo.
 
 ## What's in here
 
 ```
-.github/workflows/kali-tmate.yml   # the whole thing
+.github/workflows/kali-web.yml   # the whole thing (ttyd + cloudflared + Kali)
 README.md
 ```
