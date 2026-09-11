@@ -76,19 +76,25 @@ jobs:
           sleep 3
 
           # Start the XFCE pieces directly in ONE D-Bus session (far more reliable headless
-          # than startxfce4). MIGRATE_DEFAULT=1 => panel loads its default layout instead of
-          # blocking on the first-run "use default config?" dialog. `wait` keeps the bus alive.
+          # than startxfce4). Panel is started LAST and retried: on first boot it can lose the
+          # race with xfconfd and exit, leaving a desktop with icons but no taskbar.
+          # MIGRATE_DEFAULT=1 => it loads its default layout instead of a blocking dialog.
           docker exec -d kali bash -c '
             export DISPLAY=:1 HOME=/root XDG_RUNTIME_DIR=/tmp/rt XFCE_PANEL_MIGRATE_DEFAULT=1
             mkdir -p /tmp/rt; chmod 700 /tmp/rt
             eval "$(dbus-launch --sh-syntax)"
             xfwm4 &
             xfsettingsd &
-            xfce4-panel &
             xfdesktop &
+            sleep 4
+            for n in 1 2 3 4 5; do
+              pgrep -x xfce4-panel >/dev/null && break
+              xfce4-panel &
+              sleep 4
+            done
             wait
           '
-          sleep 8
+          sleep 12
 
           # Report what actually came up (shows as a run annotation, readable while running)
           STAT=$(docker exec kali bash -c "echo wm=\$(pgrep -c xfwm4) panel=\$(pgrep -c xfce4-panel) desktop=\$(pgrep -c xfdesktop)")
