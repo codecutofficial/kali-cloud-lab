@@ -70,8 +70,8 @@ jobs:
           # Virtual X display :1
           docker exec -d kali bash -c "Xvfb :1 -screen 0 ${GEO}x24 -ac"
           sleep 2
-          # XFCE session on :1
-          docker exec -d kali bash -c "export DISPLAY=:1 XDG_RUNTIME_DIR=/tmp/rt; mkdir -p /tmp/rt; dbus-launch --exit-with-session startxfce4"
+          # XFCE session on :1  (MIGRATE_DEFAULT=1 => panel loads defaults, no blocking first-run dialog)
+          docker exec -d kali bash -c "export DISPLAY=:1 XDG_RUNTIME_DIR=/tmp/rt XFCE_PANEL_MIGRATE_DEFAULT=1; mkdir -p /tmp/rt; dbus-launch --exit-with-session startxfce4"
           sleep 4
           # VNC server bound to :1 (localhost only; noVNC bridges it)
           docker exec -d kali bash -c "x11vnc -display :1 -rfbport 5901 -rfbauth /root/.vnc/passwd -forever -shared -localhost -o /root/.vnc/x11vnc.log"
