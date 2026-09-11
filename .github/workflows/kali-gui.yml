@@ -1,22 +1,14 @@
-name: Kali Linux GUI (noVNC via Cloudflare)
+name: Kali Linux GUI (LinuxServer desktop via Cloudflare)
 
-# Boots a Kali container, installs the XFCE desktop and runs it on a virtual
-# display (Xvfb) served by x11vnc + noVNC, exposed in the browser through a
-# Cloudflare quick tunnel (no account, no secrets). The public https link +
-# VNC password are written to the run's SUMMARY tab and echoed in the logs.
+# Runs the maintained LinuxServer.io Kali desktop image (a full KDE desktop WITH a
+# taskbar, served in the browser over KasmVNC/Selkies on port 3000) and exposes it
+# through a Cloudflare quick tunnel (no account, no secrets). The public https link
+# and the web login land in the run's SUMMARY tab. The desktop startup is handled by
+# the image itself, so there is no fragile X/panel bring-up here.
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      full_toolset:
-        description: "Also install kali-linux-headless (big arsenal, adds ~10 min)."
-        type: boolean
-        default: false
-      geometry:
-        description: "Desktop resolution."
-        type: string
-        default: "1360x768"
 
 permissions:
   contents: read
@@ -30,92 +22,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Start Kali container
-        run: |
-          set -euo pipefail
-          docker pull kalilinux/kali-rolling
-          docker run -d --name kali --hostname kali \
-            --shm-size=1g --security-opt seccomp=unconfined \
-            -p 6080:6080 -v "$PWD":/work -w /work \
-            kalilinux/kali-rolling sleep infinity
-
-      - name: Install XFCE desktop + VNC + noVNC + tools
-        run: |
-          set -euo pipefail
-          docker exec kali bash -c "apt-get update"
-          docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            kali-desktop-xfce xvfb x11vnc \
-            novnc websockify dbus-x11 procps sudo \
-            nmap firefox-esr xterm"
-          if [ "${{ github.event.inputs.full_toolset }}" = "true" ]; then
-            echo "Installing kali-linux-headless (large)..."
-            docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y kali-linux-headless"
-          fi
-          docker exec kali bash -c "grep PRETTY_NAME /etc/os-release"
-
-      - name: Configure & start the desktop (Xvfb + XFCE + x11vnc + noVNC)
-        env:
-          GEO: ${{ github.event.inputs.geometry }}
+      - name: Start Kali desktop container
         run: |
           set -uo pipefail
-          GEO="${GEO:-1360x768}"
-          VNCPASS=$(openssl rand -hex 4)          # 8 chars
-          echo "VNCPASS=$VNCPASS" >> "$GITHUB_ENV"
+          WEBPASS=$(openssl rand -hex 5)
+          echo "WEBPASS=$WEBPASS" >> "$GITHUB_ENV"
+          docker run -d --name kali \
+            -e PUID=1000 -e PGID=1000 -e TZ=Etc/UTC \
+            -e CUSTOM_USER=kali -e PASSWORD="$WEBPASS" \
+            -e TITLE="Kali Cloud Lab" \
+            --shm-size=1gb --security-opt seccomp=unconfined \
+            -p 3000:3000 \
+            lscr.io/linuxserver/kali-linux:latest
 
-          # D-Bus needs a machine-id + a system bus, or XFCE silently dies to a black screen
-          docker exec kali bash -c "dbus-uuidgen --ensure=/etc/machine-id; dbus-uuidgen --ensure; mkdir -p /run/dbus; (service dbus start || dbus-daemon --system --fork) >/dev/null 2>&1 || true"
-
-          # VNC password file
-          docker exec kali bash -c "mkdir -p /root/.vnc && x11vnc -storepasswd '$VNCPASS' /root/.vnc/passwd"
-
-          # Virtual X display :1
-          docker exec -d kali bash -c "Xvfb :1 -screen 0 ${GEO}x24 -ac -noreset"
-          sleep 3
-
-          # Start the XFCE pieces directly in ONE D-Bus session (far more reliable headless
-          # than startxfce4). Panel is started LAST and retried: on first boot it can lose the
-          # race with xfconfd and exit, leaving a desktop with icons but no taskbar.
-          # MIGRATE_DEFAULT=1 => it loads its default layout instead of a blocking dialog.
-          docker exec -d kali bash -c '
-            export DISPLAY=:1 HOME=/root XDG_RUNTIME_DIR=/tmp/rt XFCE_PANEL_MIGRATE_DEFAULT=1
-            mkdir -p /tmp/rt; chmod 700 /tmp/rt
-            eval "$(dbus-launch --sh-syntax)"
-            xfwm4 &
-            xfsettingsd &
-            xfdesktop &
-            sleep 4
-            for n in 1 2 3 4 5; do
-              pgrep -x xfce4-panel >/dev/null && break
-              xfce4-panel &
-              sleep 4
-            done
-            wait
-          '
-          sleep 12
-
-          # Report what actually came up (shows as a run annotation, readable while running)
-          STAT=$(docker exec kali bash -c "echo wm=\$(pgrep -c xfwm4) panel=\$(pgrep -c xfce4-panel) desktop=\$(pgrep -c xfdesktop)")
-          echo "::notice title=XFCE status::$STAT"
-          echo "XFCE status: $STAT"
-
-          # VNC server bound to :1 (localhost only; noVNC bridges it)
-          docker exec -d kali bash -c "x11vnc -display :1 -rfbport 5901 -rfbauth /root/.vnc/passwd -forever -shared -localhost -o /root/.vnc/x11vnc.log"
-          sleep 2
-          # noVNC: web client + websocket bridge on 6080
-          docker exec -d kali bash -c "websockify --web=/usr/share/novnc 6080 localhost:5901"
-
-          # Wait until VNC is actually listening, else fail with the log
-          docker exec kali bash -c 'for i in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/5901) 2>/dev/null && { echo "VNC is up on :5901"; exit 0; }; sleep 1; done; echo "VNC did not come up:"; cat /root/.vnc/x11vnc.log 2>/dev/null; exit 1'
+      - name: Wait for the desktop to come up
+        run: |
+          set -uo pipefail
+          echo "First boot pulls a multi-GB image and starts a full desktop — this can take several minutes."
+          for i in $(seq 1 150); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ 2>/dev/null || true)
+            if [ "$code" = "200" ] || [ "$code" = "401" ]; then
+              echo "Web desktop is up (HTTP $code)"
+              docker exec kali sh -c "grep PRETTY_NAME /etc/os-release" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Desktop did not respond in time. Recent container logs:"
+          docker logs --tail 150 kali || true
+          exit 1
 
       - name: Public link (Cloudflare) — LINK IS IN THE SUMMARY TAB
         run: |
           set -uo pipefail
           sudo wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
           sudo chmod +x /usr/local/bin/cloudflared
-          cloudflared tunnel --no-autoupdate --url http://localhost:6080 > /tmp/cf.log 2>&1 &
+          cloudflared tunnel --no-autoupdate --url http://localhost:3000 > /tmp/cf.log 2>&1 &
           CF_PID=$!
           URL=""
           for i in $(seq 1 45); do
@@ -123,30 +65,30 @@ jobs:
             [ -n "$URL" ] && break
             sleep 2
           done
-          FULL="${URL}/vnc.html?autoconnect=true&resize=scale&password=${VNCPASS}"
           {
-            echo "# 🐉 Kali Linux GUI is live"
+            echo "# 🐉 Kali Linux desktop is live"
             echo ""
             if [ -n "$URL" ]; then
-              echo "## Open the desktop in any browser (autoconnects):"
+              echo "## Open in any browser:"
               echo ""
-              echo "# ${FULL}"
+              echo "# ${URL}"
               echo ""
-              echo "Plain link (enter the password yourself): **${URL}/vnc.html**"
+              echo "Log in when the browser prompts:"
               echo ""
-              echo "VNC password: \`${VNCPASS}\`"
+              echo "- user: \`kali\`"
+              echo "- password: \`${WEBPASS}\`"
             else
               echo "⚠️ Tunnel URL didn't appear. cloudflared log:"; echo '```'; cat /tmp/cf.log || true; echo '```'
             fi
             echo ""
             echo "---"
-            echo "_Full Kali XFCE desktop. Ephemeral: auto-stops at 6h; cancel the run to stop sooner._"
+            echo "_Full Kali KDE desktop (LinuxServer.io image). Ephemeral: auto-stops at 6h; cancel the run to stop sooner._"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "::notice title=Kali GUI link::${FULL}"
+          echo "::notice title=Kali desktop link::${URL}  (user: kali  pass: ${WEBPASS})"
           echo "=================================================="
-          echo " KALI GUI : ${FULL}"
-          echo " VNC PASS : ${VNCPASS}"
+          echo " KALI DESKTOP : ${URL}"
+          echo " LOGIN        : kali / ${WEBPASS}"
           echo "=================================================="
 
           # Hold the job open so the desktop stays reachable (under the 6h cap).

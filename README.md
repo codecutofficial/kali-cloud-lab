@@ -1,6 +1,6 @@
 # kali-cloud-lab
 
-Spin up a **temporary Kali Linux GUI desktop on GitHub Actions** and open it in your **browser** from anywhere — a full **XFCE desktop** served over **noVNC** and exposed through a **Cloudflare quick tunnel** (no account, no secrets, no VNC client to install).
+Spin up a **temporary Kali Linux desktop on GitHub Actions** and open it in your **browser** from anywhere — a full **KDE desktop with a taskbar**, served over **KasmVNC** by the maintained [LinuxServer.io Kali image](https://docs.linuxserver.io/images/docker-kali-linux/) and exposed through a **Cloudflare quick tunnel** (no account, no secrets, nothing to install locally).
 
 Ephemeral by design: a GitHub Actions job is capped at **6 hours**, then everything is destroyed. Throwaway lab, not persistent hosting.
 
@@ -9,19 +9,18 @@ Ephemeral by design: a GitHub Actions job is capped at **6 hours**, then everyth
 ## How to use it
 
 1. Runs automatically on every push to `main`. To start one manually:
-   **Actions → "Kali Linux GUI (noVNC via Cloudflare)" → Run workflow**.
-   - **full_toolset** (optional): also installs `kali-linux-headless` (big arsenal, +~10 min).
-   - **geometry** (optional): desktop resolution, default `1360x768`.
-2. First run takes **~10–15 min** (desktop + tools install). When it reaches the last step, open the run's **Summary** tab (top of the run page). It shows:
+   **Actions → "Kali Linux GUI (LinuxServer desktop via Cloudflare)" → Run workflow**.
+2. First run takes **~5–10 min** (it pulls a multi-GB image and boots a full desktop). When it reaches the last step, open the run's **Summary** tab (top of the run page). It shows:
    ```
-   🐉 Kali Linux GUI is live
-   Open the desktop in any browser (autoconnects):
-       https://<random>.trycloudflare.com/vnc.html?autoconnect=true&resize=scale&password=<pass>
-   VNC password: <shown here>
+   🐉 Kali Linux desktop is live
+   Open in any browser:
+       https://<random>.trycloudflare.com
+   user: kali
+   password: <shown here>
    ```
-3. Click the link → the **Kali XFCE desktop** loads right in the browser. Your repo is mounted at `/work`.
+3. Click the link → your browser prompts for the login above → the **Kali KDE desktop** loads right in the tab.
 
-No scrolling logs — the link + password are in the **Summary tab** (and echoed at the bottom of the last step).
+No scrolling logs — the link + login are in the **Summary tab** (and echoed at the bottom of the last step).
 
 ## Ending the box early
 
@@ -30,24 +29,26 @@ No scrolling logs — the link + password are in the **Summary tab** (and echoed
 
 ## Installing more tools (in a terminal on the desktop)
 
+Open the terminal from the taskbar, then:
+
 ```bash
-apt update
-apt install -y metasploit-framework sqlmap gobuster burpsuite   # etc.
-apt install -y kali-linux-headless                              # full metapackage
+sudo apt update
+sudo apt install -y metasploit-framework sqlmap gobuster   # etc.
+sudo apt install -y kali-linux-headless                    # full metapackage
 ```
 
 ---
 
 ## Notes & caveats
 
-- **It IS Kali** — `cat /etc/os-release` shows `Kali GNU/Linux Rolling`. `uname -r` shows an `-azure` kernel because *every container shares the host kernel* (GitHub runners are Azure VMs); there's no separate "Kali kernel" in a container. The Kali userland/tools are the real thing.
-- **Public link.** Because the repo is **public**, the link + VNC password sit in publicly viewable run output while the job runs — treat the box as exposed and don't put anything sensitive in it. For privacy, make the repo **private**.
+- **It IS Kali** — the desktop runs the `lscr.io/linuxserver/kali-linux` image; `cat /etc/os-release` shows `Kali GNU/Linux Rolling`. `uname -r` reports an `-azure` kernel because *every container shares the host kernel* (GitHub runners are Azure VMs); there is no separate "Kali kernel" in a container. The Kali userland/tools are the real thing.
+- **Public link + passwordless root.** The repo is **public**, so the link and password sit in publicly viewable run output while the job runs, and the desktop terminal has **passwordless `sudo`**. Treat the box as fully exposed — don't put anything sensitive in it. For privacy, make the repo **private**.
 - **GitHub Actions Terms.** Actions is meant for building/testing/deploying the repo's own software; using it as a remote-desktop host is a gray area under GitHub's Acceptable Use Policies. Keep it to legitimate, authorized use — learning, CTFs, and testing systems **you're allowed to test**.
-- **Nothing persists** between runs except what you commit to the repo.
+- **Nothing persists** between runs.
 
 ## What's in here
 
 ```
-.github/workflows/kali-gui.yml   # the whole thing (XFCE + TigerVNC + noVNC + cloudflared)
+.github/workflows/kali-gui.yml   # the whole thing (LinuxServer Kali desktop + cloudflared)
 README.md
 ```
