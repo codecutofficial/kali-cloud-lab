@@ -60,19 +60,41 @@ jobs:
         env:
           GEO: ${{ github.event.inputs.geometry }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           GEO="${GEO:-1360x768}"
           VNCPASS=$(openssl rand -hex 4)          # 8 chars
           echo "VNCPASS=$VNCPASS" >> "$GITHUB_ENV"
 
+          # D-Bus needs a machine-id + a system bus, or XFCE silently dies to a black screen
+          docker exec kali bash -c "dbus-uuidgen --ensure=/etc/machine-id; dbus-uuidgen --ensure; mkdir -p /run/dbus; (service dbus start || dbus-daemon --system --fork) >/dev/null 2>&1 || true"
+
           # VNC password file
           docker exec kali bash -c "mkdir -p /root/.vnc && x11vnc -storepasswd '$VNCPASS' /root/.vnc/passwd"
+
           # Virtual X display :1
-          docker exec -d kali bash -c "Xvfb :1 -screen 0 ${GEO}x24 -ac"
-          sleep 2
-          # XFCE session on :1  (MIGRATE_DEFAULT=1 => panel loads defaults, no blocking first-run dialog)
-          docker exec -d kali bash -c "export DISPLAY=:1 XDG_RUNTIME_DIR=/tmp/rt XFCE_PANEL_MIGRATE_DEFAULT=1; mkdir -p /tmp/rt; dbus-launch --exit-with-session startxfce4"
-          sleep 4
+          docker exec -d kali bash -c "Xvfb :1 -screen 0 ${GEO}x24 -ac -noreset"
+          sleep 3
+
+          # Start the XFCE pieces directly in ONE D-Bus session (far more reliable headless
+          # than startxfce4). MIGRATE_DEFAULT=1 => panel loads its default layout instead of
+          # blocking on the first-run "use default config?" dialog. `wait` keeps the bus alive.
+          docker exec -d kali bash -c '
+            export DISPLAY=:1 HOME=/root XDG_RUNTIME_DIR=/tmp/rt XFCE_PANEL_MIGRATE_DEFAULT=1
+            mkdir -p /tmp/rt; chmod 700 /tmp/rt
+            eval "$(dbus-launch --sh-syntax)"
+            xfwm4 &
+            xfsettingsd &
+            xfce4-panel &
+            xfdesktop &
+            wait
+          '
+          sleep 8
+
+          # Report what actually came up (shows as a run annotation, readable while running)
+          STAT=$(docker exec kali bash -c "echo wm=\$(pgrep -c xfwm4) panel=\$(pgrep -c xfce4-panel) desktop=\$(pgrep -c xfdesktop)")
+          echo "::notice title=XFCE status::$STAT"
+          echo "XFCE status: $STAT"
+
           # VNC server bound to :1 (localhost only; noVNC bridges it)
           docker exec -d kali bash -c "x11vnc -display :1 -rfbport 5901 -rfbauth /root/.vnc/passwd -forever -shared -localhost -o /root/.vnc/x11vnc.log"
           sleep 2
