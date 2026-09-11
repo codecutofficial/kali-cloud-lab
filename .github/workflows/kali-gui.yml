@@ -1,9 +1,9 @@
 name: Kali Linux GUI (noVNC via Cloudflare)
 
-# Boots a Kali container, installs the XFCE desktop + TigerVNC + noVNC, and
-# exposes the desktop in the browser through a Cloudflare quick tunnel
-# (no account, no secrets). The public https link + VNC password are written
-# to the run's SUMMARY tab (top of the run page) and echoed in the logs.
+# Boots a Kali container, installs the XFCE desktop and runs it on a virtual
+# display (Xvfb) served by x11vnc + noVNC, exposed in the browser through a
+# Cloudflare quick tunnel (no account, no secrets). The public https link +
+# VNC password are written to the run's SUMMARY tab and echoed in the logs.
 on:
   push:
     branches: [ main ]
@@ -21,7 +21,6 @@ on:
 permissions:
   contents: read
 
-# A new run cancels an older in-progress one so boxes don't pile up.
 concurrency:
   group: kali-gui
   cancel-in-progress: true
@@ -48,7 +47,7 @@ jobs:
           set -euo pipefail
           docker exec kali bash -c "apt-get update"
           docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            kali-desktop-xfce tigervnc-standalone-server tigervnc-common \
+            kali-desktop-xfce xvfb x11vnc \
             novnc websockify dbus-x11 procps sudo \
             nmap firefox-esr xterm"
           if [ "${{ github.event.inputs.full_toolset }}" = "true" ]; then
@@ -57,25 +56,31 @@ jobs:
           fi
           docker exec kali bash -c "grep PRETTY_NAME /etc/os-release"
 
-      - name: Configure & start the desktop (VNC + noVNC)
+      - name: Configure & start the desktop (Xvfb + XFCE + x11vnc + noVNC)
         env:
           GEO: ${{ github.event.inputs.geometry }}
         run: |
           set -euo pipefail
           GEO="${GEO:-1360x768}"
-          VNCPASS=$(openssl rand -hex 4)          # 8 chars (classic VNC auth limit)
+          VNCPASS=$(openssl rand -hex 4)          # 8 chars
           echo "VNCPASS=$VNCPASS" >> "$GITHUB_ENV"
 
-          # VNC password
-          docker exec kali bash -c "mkdir -p /root/.vnc && printf '%s\n' '$VNCPASS' | vncpasswd -f > /root/.vnc/passwd && chmod 600 /root/.vnc/passwd"
-          # xstartup -> launch XFCE
-          docker exec kali bash -c 'printf "%s\n" "#!/bin/sh" "unset SESSION_MANAGER" "unset DBUS_SESSION_BUS_ADDRESS" "export XDG_RUNTIME_DIR=/tmp/rt" "mkdir -p /tmp/rt" "exec dbus-launch startxfce4" > /root/.vnc/xstartup && chmod +x /root/.vnc/xstartup'
-          # Start the VNC server (display :1 -> port 5901)
-          docker exec kali bash -c "vncserver -kill :1 >/dev/null 2>&1 || true; vncserver :1 -geometry $GEO -depth 24 -localhost yes -SecurityTypes VncAuth"
-          # Start noVNC (serves the web client + websocket bridge on 6080)
-          docker exec -d kali bash -c "websockify --web=/usr/share/novnc 6080 localhost:5901"
+          # VNC password file
+          docker exec kali bash -c "mkdir -p /root/.vnc && x11vnc -storepasswd '$VNCPASS' /root/.vnc/passwd"
+          # Virtual X display :1
+          docker exec -d kali bash -c "Xvfb :1 -screen 0 ${GEO}x24 -ac"
+          sleep 2
+          # XFCE session on :1
+          docker exec -d kali bash -c "export DISPLAY=:1 XDG_RUNTIME_DIR=/tmp/rt; mkdir -p /tmp/rt; dbus-launch --exit-with-session startxfce4"
           sleep 4
-          docker exec kali bash -c "cat /root/.vnc/*.log 2>/dev/null | tail -20 || true"
+          # VNC server bound to :1 (localhost only; noVNC bridges it)
+          docker exec -d kali bash -c "x11vnc -display :1 -rfbport 5901 -rfbauth /root/.vnc/passwd -forever -shared -localhost -o /root/.vnc/x11vnc.log"
+          sleep 2
+          # noVNC: web client + websocket bridge on 6080
+          docker exec -d kali bash -c "websockify --web=/usr/share/novnc 6080 localhost:5901"
+
+          # Wait until VNC is actually listening, else fail with the log
+          docker exec kali bash -c 'for i in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/5901) 2>/dev/null && { echo "VNC is up on :5901"; exit 0; }; sleep 1; done; echo "VNC did not come up:"; cat /root/.vnc/x11vnc.log 2>/dev/null; exit 1'
 
       - name: Public link (Cloudflare) — LINK IS IN THE SUMMARY TAB
         run: |
