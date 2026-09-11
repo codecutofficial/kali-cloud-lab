@@ -1,0 +1,125 @@
+name: Kali Linux GUI (noVNC via Cloudflare)
+
+# Boots a Kali container, installs the XFCE desktop + TigerVNC + noVNC, and
+# exposes the desktop in the browser through a Cloudflare quick tunnel
+# (no account, no secrets). The public https link + VNC password are written
+# to the run's SUMMARY tab (top of the run page) and echoed in the logs.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      full_toolset:
+        description: "Also install kali-linux-headless (big arsenal, adds ~10 min)."
+        type: boolean
+        default: false
+      geometry:
+        description: "Desktop resolution."
+        type: string
+        default: "1360x768"
+
+permissions:
+  contents: read
+
+# A new run cancels an older in-progress one so boxes don't pile up.
+concurrency:
+  group: kali-gui
+  cancel-in-progress: true
+
+jobs:
+  kali-gui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Kali container
+        run: |
+          set -euo pipefail
+          docker pull kalilinux/kali-rolling
+          docker run -d --name kali --hostname kali \
+            --shm-size=1g --security-opt seccomp=unconfined \
+            -p 6080:6080 -v "$PWD":/work -w /work \
+            kalilinux/kali-rolling sleep infinity
+
+      - name: Install XFCE desktop + VNC + noVNC + tools
+        run: |
+          set -euo pipefail
+          docker exec kali bash -c "apt-get update"
+          docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            kali-desktop-xfce tigervnc-standalone-server tigervnc-common \
+            novnc websockify dbus-x11 procps sudo \
+            nmap firefox-esr xterm"
+          if [ "${{ github.event.inputs.full_toolset }}" = "true" ]; then
+            echo "Installing kali-linux-headless (large)..."
+            docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y kali-linux-headless"
+          fi
+          docker exec kali bash -c "grep PRETTY_NAME /etc/os-release"
+
+      - name: Configure & start the desktop (VNC + noVNC)
+        env:
+          GEO: ${{ github.event.inputs.geometry }}
+        run: |
+          set -euo pipefail
+          GEO="${GEO:-1360x768}"
+          VNCPASS=$(openssl rand -hex 4)          # 8 chars (classic VNC auth limit)
+          echo "VNCPASS=$VNCPASS" >> "$GITHUB_ENV"
+
+          # VNC password
+          docker exec kali bash -c "mkdir -p /root/.vnc && printf '%s\n' '$VNCPASS' | vncpasswd -f > /root/.vnc/passwd && chmod 600 /root/.vnc/passwd"
+          # xstartup -> launch XFCE
+          docker exec kali bash -c 'printf "%s\n" "#!/bin/sh" "unset SESSION_MANAGER" "unset DBUS_SESSION_BUS_ADDRESS" "export XDG_RUNTIME_DIR=/tmp/rt" "mkdir -p /tmp/rt" "exec dbus-launch startxfce4" > /root/.vnc/xstartup && chmod +x /root/.vnc/xstartup'
+          # Start the VNC server (display :1 -> port 5901)
+          docker exec kali bash -c "vncserver -kill :1 >/dev/null 2>&1 || true; vncserver :1 -geometry $GEO -depth 24 -localhost yes -SecurityTypes VncAuth"
+          # Start noVNC (serves the web client + websocket bridge on 6080)
+          docker exec -d kali bash -c "websockify --web=/usr/share/novnc 6080 localhost:5901"
+          sleep 4
+          docker exec kali bash -c "cat /root/.vnc/*.log 2>/dev/null | tail -20 || true"
+
+      - name: Public link (Cloudflare) — LINK IS IN THE SUMMARY TAB
+        run: |
+          set -uo pipefail
+          sudo wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          cloudflared tunnel --no-autoupdate --url http://localhost:6080 > /tmp/cf.log 2>&1 &
+          CF_PID=$!
+          URL=""
+          for i in $(seq 1 45); do
+            URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1 || true)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          FULL="${URL}/vnc.html?autoconnect=true&resize=scale&password=${VNCPASS}"
+          {
+            echo "# 🐉 Kali Linux GUI is live"
+            echo ""
+            if [ -n "$URL" ]; then
+              echo "## Open the desktop in any browser (autoconnects):"
+              echo ""
+              echo "# ${FULL}"
+              echo ""
+              echo "Plain link (enter the password yourself): **${URL}/vnc.html**"
+              echo ""
+              echo "VNC password: \`${VNCPASS}\`"
+            else
+              echo "⚠️ Tunnel URL didn't appear. cloudflared log:"; echo '```'; cat /tmp/cf.log || true; echo '```'
+            fi
+            echo ""
+            echo "---"
+            echo "_Full Kali XFCE desktop. Ephemeral: auto-stops at 6h; cancel the run to stop sooner._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::notice title=Kali GUI link::${FULL}"
+          echo "=================================================="
+          echo " KALI GUI : ${FULL}"
+          echo " VNC PASS : ${VNCPASS}"
+          echo "=================================================="
+
+          # Hold the job open so the desktop stays reachable (under the 6h cap).
+          END=$((SECONDS + 21000))
+          while [ $SECONDS -lt $END ]; do
+            if ! kill -0 "$CF_PID" 2>/dev/null; then echo "cloudflared exited:"; cat /tmp/cf.log; exit 1; fi
+            sleep 10
+          done
+          echo "Reached time limit; shutting down."
