@@ -1,0 +1,99 @@
+name: Kali Linux (tmate remote access)
+
+# Auto-runs on every push to main, and can be started manually from the
+# Actions tab (Run workflow). The public access link is printed live inside
+# the "Start tmate session" step logs.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      full_toolset:
+        description: "Install the big Kali toolset (kali-linux-headless, ~5-10 min). Off = light, fast toolset."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  kali:
+    runs-on: ubuntu-latest
+    # GitHub hard-caps a job at 6h. The box dies when the job ends.
+    # Cancel the run anytime (or `touch /continue` in the session) to kill it early.
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Runner + Docker info
+        run: |
+          echo "Runner: $(uname -a)"
+          docker --version
+
+      - name: Pull & start Kali Linux container
+        run: |
+          set -euo pipefail
+          docker pull kalilinux/kali-rolling
+          docker run -d --name kali --network host \
+            -v "$PWD":/work -w /work \
+            kalilinux/kali-rolling sleep infinity
+          echo "Kali container is running."
+
+      - name: Install tools inside Kali
+        run: |
+          set -euo pipefail
+          docker exec kali bash -c "apt-get update"
+          if [ "${{ github.event.inputs.full_toolset }}" = "true" ]; then
+            echo "Installing kali-linux-headless (this is large)..."
+            docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y kali-linux-headless"
+          else
+            echo "Installing light toolset..."
+            docker exec kali bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              nmap netcat-traditional curl wget git vim less \
+              python3 python3-pip iproute2 iputils-ping dnsutils net-tools whois"
+          fi
+          echo "Kali version:"
+          docker exec kali bash -c "cat /etc/os-release | head -2"
+
+      - name: Add a 'kali' shortcut to the remote shell
+        run: |
+          {
+            echo ''
+            echo '# --- kali-cloud-lab helpers ---'
+            echo 'alias kali="docker exec -it kali bash"'
+            echo 'echo ""'
+            echo 'echo "==============================================="'
+            echo 'echo "  Kali Linux is running in a container."'
+            echo 'echo "  Type:  kali     -> enter the Kali root shell"'
+            echo 'echo "  Files: /work    -> your repo, mounted in Kali"'
+            echo 'echo "  End:   touch /continue   -> ends this session"'
+            echo 'echo "==============================================="'
+          } >> "$HOME/.bashrc"
+
+      - name: How to connect (job summary)
+        run: |
+          {
+            echo "## Kali box is booting"
+            echo ""
+            echo "Open the **Start tmate session** step below. It prints, and refreshes every few seconds:"
+            echo ""
+            echo '```'
+            echo "SSH: ssh <random>@nyc1.tmate.io"
+            echo "Web: https://tmate.io/t/<random>"
+            echo '```'
+            echo ""
+            echo "- Click the **Web** link to open a terminal in your browser (works anywhere)."
+            echo "- Once connected, type **\`kali\`** to enter the Kali Linux shell."
+            echo "- To shut the box down early: run **\`touch /continue\`** in the session, or cancel this run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start tmate session (SSH + web link)
+        uses: mxschmitt/action-tmate@v3
+        with:
+          # false = the tmate web link works for anyone who has it (no SSH key needed).
+          # WARNING: this repo is PUBLIC, so this link is visible in public logs while
+          # the job runs -> anyone could connect. Set this to true to restrict SSH
+          # access to your own GitHub-registered SSH keys instead.
+          limit-access-to-actor: false
