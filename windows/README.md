@@ -47,9 +47,22 @@ locally. Same VM, dramatically better feel.
 
 The runner sits behind Azure NAT with **no inbound-reachable IP**, so you can't dial it
 directly — no port-forward or firewall rule exists for you to open. Something has to dial
-*out* and relay. The workflow sets up whichever of these is available:
+*out* and relay, and there are **two ways to do that**. Every run sets up whichever are
+available and prints both in the Summary, so you can use either one:
 
-### bore — nothing to install (default)
+| | **bore** | **Tailscale** |
+|---|---|---|
+| Setup | none — always on | sign up once + one repo secret |
+| Address | `bore.pub:PORT`, **changes every run** | `winlab.<tailnet>.ts.net:3389`, **always the same** |
+| Exposure | public relay — open to the internet while live | private to your own devices |
+| Transport | TCP only (needs the UDP tweak below) | TCP **and UDP** — RDP's fast path |
+| Speed | one relay in New Jersey | picks a relay near you |
+| Cost | free | free, no card |
+
+Short version: **bore** if you just want in right now; **Tailscale** if you use this often
+or you're far from the US.
+
+### Option A — bore (nothing to install)
 
 Already on by default. The Summary tab shows:
 
@@ -79,15 +92,18 @@ Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Se
 ```
 
 This only affects how your client negotiates transport; TCP-based RDP is unaffected, so it
-is safe to leave set. (Tailscale carries UDP fine and doesn't need this.)
+is safe to leave set. **But if you switch to Tailscale, undo it** (set the value to `0`) —
+Tailscale carries UDP, and leaving it disabled throws away the faster path.
 
 The other catch: **the port is different every run**, so you copy it from the Summary each
 time. `bore.pub` is also a free community relay — if it's having a bad day, the workflow
 reconnects automatically and posts the new port as a warning annotation.
 
-### Tailscale — a fixed address that never changes (optional, free)
+### Option B — Tailscale (a fixed address that never changes)
 
-If re-copying the port annoys you, this removes that step permanently. One-time setup:
+Free, no card. This removes the copy-the-port step permanently **and** is usually the faster
+of the two: it picks a relay near you instead of routing everything through New Jersey, and
+it carries UDP so RDP's fast path actually works. One-time setup:
 
 1. Sign up at [tailscale.com](https://tailscale.com) (free, personal use, no card).
 2. Install Tailscale on your PC and sign in. Leave it running — that's the only local step,
@@ -109,6 +125,9 @@ exposed to the internet, only to your own devices, unlike bore and the browser l
 The key is *ephemeral*, so each run's node removes itself from your tailnet afterwards; the
 workflow also runs `tailscale logout` on the way out so the name stays `winlab` rather than
 drifting to `winlab-1`. Keep the key in the repo secret — never in the workflow file.
+
+> Setting `TS_AUTHKEY` doesn't turn bore off. Both addresses appear in every Summary; use
+> whichever you like on the day.
 
 ## Browser route (slower, but zero setup)
 

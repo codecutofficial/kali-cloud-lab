@@ -332,20 +332,52 @@ jobs:
             echo ""
             echo "## ⚡ Remote Desktop — paste into \`mstsc\`, NOT a browser"
             echo ""
-            if [ -n "$TS_HOST" ]; then
-              echo "\`\`\`"
-              echo "${TS_HOST}:3389"
-              echo "\`\`\`"
-              echo ""
-              echo "(Tailscale — this address is the same every run.)"
-              echo ""
-            fi
+            echo "Two relays, **same VM**. Either works — pick one."
+            echo ""
             if [ -n "$RDP_HOST" ]; then
+              echo "### Option A — bore (already on, nothing to install)"
+              echo ""
               echo "\`\`\`"
               echo "${RDP_HOST}"
               echo "\`\`\`"
               echo ""
-              echo "(bore — nothing to install, but **the port changes every run**, so copy it fresh.)"
+              echo "The port **changes every run**, so copy it fresh each time. One-time PC"
+              echo "setup is required — see \`windows/README.md\`: bore relays TCP only, and"
+              echo "\`mstsc\` hangs at *\"Configuring remote session\"* until you turn off"
+              echo "client-side UDP."
+              echo ""
+            else
+              echo "### Option A — bore"
+              echo ""
+              echo "_bore did not come up this run._"
+              echo ""
+            fi
+            if [ -n "$TS_HOST" ]; then
+              echo "### Option B — Tailscale (fixed address, private) ✅ active"
+              echo ""
+              echo "\`\`\`"
+              echo "${TS_HOST}:3389"
+              echo "\`\`\`"
+              echo ""
+              echo "**This one is the same every run** — save it in \`mstsc\` once and reuse it."
+              echo "It is also private (never exposed to the internet) and carries UDP, so it"
+              echo "is usually the smoother of the two. If you set \`fClientDisableUDP\` for"
+              echo "bore, undo it to get the fast path back."
+              echo ""
+            else
+              echo "### Option B — Tailscale (fixed address, private) — not set up"
+              echo ""
+              echo "Optional, free, no card. Removes the copy-the-port-every-run step and is"
+              echo "usually **faster** than bore: it picks a relay near you and carries UDP,"
+              echo "while bore relays TCP-only through a single server in New Jersey."
+              echo ""
+              echo "1. Sign up at <https://tailscale.com> and install the client on your PC."
+              echo "2. Admin console → **Settings → Keys → Generate auth key** → tick"
+              echo "   **Ephemeral** and **Reusable**."
+              echo "3. This repo → **Settings → Secrets and variables → Actions → New repository"
+              echo "   secret** → name it \`TS_AUTHKEY\`, paste the key."
+              echo ""
+              echo "Every run after that also prints a constant \`winlab.<your-tailnet>.ts.net:3389\`."
               echo ""
             fi
             if [ -z "$TS_HOST" ] && [ -z "$RDP_HOST" ]; then
@@ -380,7 +412,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice title=Install progress::${INST}"
           [ -n "$RDP_HOST" ] && echo "::notice title=RDP for mstsc (ready after install)::${RDP_HOST}  Docker/${WINPASS}"
-          [ -n "$TS_HOST" ] && echo "::notice title=RDP via Tailscale (stable)::${TS_HOST}:3389  Docker/${WINPASS}"
+          if [ -n "$TS_HOST" ]; then
+            echo "::notice title=RDP via Tailscale (stable address)::${TS_HOST}:3389  Docker/${WINPASS}"
+          else
+            echo "::notice title=Tip — a fixed RDP address::Add a TS_AUTHKEY repo secret to also get a Tailscale address that never changes (free, no card, usually faster than bore). Setup steps are in the Summary tab."
+          fi
           echo "::notice title=Browser desktop (ready after install)::${URL}  guacadmin/${GUACPASS}"
 
           # Wait for Windows to finish installing and actually serve RDP.
@@ -424,8 +460,18 @@ jobs:
               echo ""
               echo "### ⚡ Remote Desktop (recommended) — for \`mstsc\`"
               echo ""
-              [ -n "$TS_HOST" ] && { echo "\`\`\`"; echo "${TS_HOST}:3389"; echo "\`\`\`"; echo ""; }
-              [ -n "$RDP_HOST" ] && { echo "\`\`\`"; echo "${RDP_HOST}"; echo "\`\`\`"; echo ""; }
+              if [ -n "$TS_HOST" ]; then
+                echo "**Tailscale** — same address every run, private, carries UDP:"
+                echo ""
+                echo "\`\`\`"; echo "${TS_HOST}:3389"; echo "\`\`\`"
+                echo ""
+              fi
+              if [ -n "$RDP_HOST" ]; then
+                echo "**bore** — nothing to install, port changes each run:"
+                echo ""
+                echo "\`\`\`"; echo "${RDP_HOST}"; echo "\`\`\`"
+                echo ""
+              fi
               echo "Sign in as \`Docker\` / \`${WINPASS}\`."
               echo ""
               echo "### Browser fallback — for a browser"
