@@ -196,24 +196,51 @@ jobs:
           docker exec -i guacdb psql -q -v ON_ERROR_STOP=1 -U guacamole -d guacamole_db < /tmp/seed.sql
 
           # Re-key guacadmin through Guacamole's OWN REST API rather than writing a hash
-          # in SQL. Its salt+hash scheme has changed across releases, so letting the app
-          # compute it is the only reliable way — an earlier SQL version of this silently
-          # left the box on the well-known default password.
-          TOKEN=$(curl -s -d "username=guacadmin&password=guacadmin" \
-            http://localhost:8080/api/tokens | grep -oE '"authToken":"[^"]+' | sed 's/.*:"//' || true)
+          # in SQL — its salt+hash scheme has changed across releases, so letting the app
+          # compute it is the only reliable way.
+          #
+          # The token is sent BOTH as a Guacamole-Token header (1.6+) and as a ?token=
+          # query parameter (1.5 and earlier), because the image is :latest and the
+          # mechanism changed between them. Nothing here is silenced: an earlier version
+          # of this discarded the response and left the box on the default password.
+          echo "Re-keying the guacadmin account..."
+          TOK_BODY=$(curl -s -w '\n%{http_code}' -d "username=guacadmin&password=guacadmin" \
+            http://localhost:8080/api/tokens || true)
+          TOK_CODE=$(echo "$TOK_BODY" | tail -1)
+          TOKEN=$(echo "$TOK_BODY" | head -n -1 | grep -oE '"authToken":"[^"]+' | sed 's/.*:"//' || true)
+          echo "  POST /api/tokens -> HTTP ${TOK_CODE}, token $([ -n "$TOKEN" ] && echo "received" || echo "MISSING")"
+
           if [ -n "$TOKEN" ]; then
-            curl -s -o /dev/null -X PUT -H "Content-Type: application/json" \
-              -d "{\"oldPassword\":\"guacadmin\",\"newPassword\":\"${GUACPASS}\"}" \
-              "http://localhost:8080/api/session/data/postgresql/users/guacadmin/password?token=${TOKEN}" || true
+            PW_URL="http://localhost:8080/api/session/data/postgresql/users/guacadmin/password"
+            BODY="{\"oldPassword\":\"guacadmin\",\"newPassword\":\"${GUACPASS}\"}"
+            for attempt in header query; do
+              if [ "$attempt" = "header" ]; then
+                CODE=$(curl -s -o /tmp/pw.out -w '%{http_code}' -X PUT \
+                  -H "Content-Type: application/json" -H "Guacamole-Token: ${TOKEN}" \
+                  -d "$BODY" "$PW_URL" || true)
+              else
+                CODE=$(curl -s -o /tmp/pw.out -w '%{http_code}' -X PUT \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" "${PW_URL}?token=${TOKEN}" || true)
+              fi
+              echo "  PUT password (${attempt}) -> HTTP ${CODE}"
+              case "$CODE" in
+                2*) echo "  accepted."; break ;;
+                *)  sed -e "s/${GUACPASS}/<redacted>/g" /tmp/pw.out 2>/dev/null | head -3 || true ;;
+              esac
+            done
           fi
 
           # Prove the new password works; never just assume it.
           if curl -s -f -d "username=guacadmin&password=${GUACPASS}" \
                   http://localhost:8080/api/tokens | grep -q authToken; then
             echo "guacadmin re-keyed and verified."
+            echo "GUAC_DEFAULT=0" >> "$GITHUB_ENV"
           else
-            echo "::warning::Could not change the Guacamole password — it is still the default 'guacadmin'."
+            echo "::warning title=Guacamole password is STILL THE DEFAULT::The browser route is open to anyone with the link. Change it in Settings -> Preferences, or just use the RDP route."
             echo "GUACPASS=guacadmin" >> "$GITHUB_ENV"
+            echo "GUAC_DEFAULT=1" >> "$GITHUB_ENV"
+            docker logs --tail 20 guacamole 2>&1 | tail -20 || true
           fi
 
       # cloudflared and the hold-open loop MUST share a step: the runner tears down a
@@ -339,6 +366,13 @@ jobs:
             echo ""
             echo "- Guacamole login: \`guacadmin\` / \`${GUACPASS}\`"
             echo ""
+            if [ "${GUAC_DEFAULT:-0}" = "1" ]; then
+              echo "> ⚠️ **That is Guacamole's default password** — the re-key failed, so anyone"
+              echo "> with the link above can open this desktop. Either change it (sign in →"
+              echo "> **guacadmin** top-right → **Settings → Preferences**) or ignore the browser"
+              echo "> route and use RDP, which has its own random password."
+              echo ""
+            fi
             echo "_This route re-encodes every frame, so it is the slower option._"
             echo ""
             echo "Watch the install: ${INST}"
