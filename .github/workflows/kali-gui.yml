@@ -88,14 +88,16 @@ jobs:
           # redraw than Plasma (which is what you want at the end of a tunnel), and
           # it keeps its settings in a different config namespace, so the two
           # desktops cannot fight over ~/.config. Same user, same files, same tools.
+          #
+          # Recommends are deliberately LEFT ON here. Installing the parts list with
+          # --no-install-recommends skips the icon themes, and you get a desktop of
+          # captionless text where the icons should be.
           if docker exec kali bash -c '
             set -e
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
-            apt-get install -y --no-install-recommends \
-              xrdp xorgxrdp dbus-x11 \
-              xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings \
-              xfce4-terminal thunar
+            apt-get install -y --no-install-recommends xrdp xorgxrdp dbus-x11 xvfb
+            apt-get install -y xfce4 xfce4-terminal adwaita-icon-theme
           ' > /tmp/xrdp-install.log 2>&1; then
             echo "packages installed."
           else
@@ -153,8 +155,74 @@ jobs:
             </property>
           </channel>
           XML
-          docker exec kali mkdir -p /config/.config/xfce4/xfconf/xfce-perchannel-xml
-          docker cp /tmp/xfwm4.xml kali:/config/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+
+          # --- Seed the panel layout, or there IS no taskbar --------------------
+          # With no xfce4-panel.xml, the panel opens a modal "Welcome to the first
+          # start of the panel" dialog and draws nothing until it is answered. On a
+          # fresh headless session nobody can answer it, so you get a bare desktop —
+          # which is exactly the black-screen failure this repo hit three times
+          # before (53efb5c, ab5a93c, 4f5b146). Seeding a layout skips the prompt.
+          cat > /tmp/xfce4-panel.xml <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <channel name="xfce4-panel" version="1.0">
+            <property name="panels" type="array">
+              <value type="int" value="1"/>
+              <property name="panel-1" type="empty">
+                <property name="position" type="string" value="p=6;x=0;y=0"/>
+                <property name="length" type="uint" value="100"/>
+                <property name="position-locked" type="bool" value="true"/>
+                <property name="size" type="uint" value="30"/>
+                <property name="plugin-ids" type="array">
+                  <value type="int" value="1"/>
+                  <value type="int" value="2"/>
+                  <value type="int" value="3"/>
+                  <value type="int" value="4"/>
+                  <value type="int" value="5"/>
+                </property>
+              </property>
+            </property>
+            <property name="plugins" type="empty">
+              <property name="plugin-1" type="string" value="applicationsmenu"/>
+              <property name="plugin-2" type="string" value="tasklist"/>
+              <property name="plugin-3" type="string" value="separator">
+                <property name="expand" type="bool" value="true"/>
+                <property name="style" type="uint" value="0"/>
+              </property>
+              <property name="plugin-4" type="string" value="systray"/>
+              <property name="plugin-5" type="string" value="clock"/>
+            </property>
+          </channel>
+          XML
+
+          # A plain background is one flat region to encode; the default gradient is
+          # a full screen of detail behind every window you move.
+          cat > /tmp/xfce4-desktop.xml <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <channel name="xfce4-desktop" version="1.0">
+            <property name="backdrop" type="empty">
+              <property name="screen0" type="empty">
+                <property name="monitor0" type="empty">
+                  <property name="workspace0" type="empty">
+                    <property name="color-style" type="int" value="0"/>
+                    <property name="image-style" type="int" value="0"/>
+                    <property name="rgba1" type="array">
+                      <value type="double" value="0.1"/>
+                      <value type="double" value="0.1"/>
+                      <value type="double" value="0.12"/>
+                      <value type="double" value="1.0"/>
+                    </property>
+                  </property>
+                </property>
+              </property>
+            </property>
+          </channel>
+          XML
+
+          XFCONF=/config/.config/xfce4/xfconf/xfce-perchannel-xml
+          docker exec kali mkdir -p "$XFCONF"
+          docker cp /tmp/xfwm4.xml         "kali:${XFCONF}/xfwm4.xml"
+          docker cp /tmp/xfce4-panel.xml   "kali:${XFCONF}/xfce4-panel.xml"
+          docker cp /tmp/xfce4-desktop.xml "kali:${XFCONF}/xfce4-desktop.xml"
           docker exec kali chown -R 1000:1000 /config/.config/xfce4 || true
 
           # Bind all interfaces so Docker's port map can reach it. xrdp already
