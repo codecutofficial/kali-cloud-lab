@@ -6,11 +6,6 @@ name: Kali Linux GUI (LinuxServer desktop via Cloudflare)
 # and the web login land in the run's SUMMARY tab. The desktop startup is handled by
 # the image itself, so there is no fragile X/panel bring-up here.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'README.md'
-      - '.github/workflows/kali-gui.yml'
   workflow_dispatch:
 
 permissions:

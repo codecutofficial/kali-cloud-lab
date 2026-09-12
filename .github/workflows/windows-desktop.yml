@@ -2,10 +2,12 @@ name: Windows Desktop (noVNC via Cloudflare)
 
 # GitHub Actions already runs on real Windows Server runners, so nothing has to be
 # "downloaded" — we just stream the runner's own desktop out. TightVNC serves the
-# already-logged-in console session, noVNC/websockify wraps it for the browser, and a
-# Cloudflare quick tunnel makes it public (no account, no secrets). Optionally also
-# exposes real RDP over a cloudflared TCP tunnel for a full-speed desktop.
-# The link + passwords land in the run's SUMMARY tab.
+# already-logged-in console session (as a *service*, so it survives step boundaries),
+# websockify/noVNC wraps it for the browser on 6080, and a Cloudflare quick tunnel makes
+# it public (no account, no secrets). Optionally also exposes real RDP over a cloudflared
+# TCP tunnel for a full-speed desktop. The link + passwords land in the SUMMARY tab.
+#
+# Manual-only on purpose: a push should never silently spin up a box.
 on:
   workflow_dispatch:
     inputs:
@@ -13,11 +15,6 @@ on:
         description: "Also expose full-speed RDP (needs cloudflared on your machine)."
         type: boolean
         default: true
-  push:
-    branches: [ main ]
-    paths:
-      - 'windows/**'
-      - '.github/workflows/windows-desktop.yml'
 
 permissions:
   contents: read
@@ -70,7 +67,12 @@ jobs:
           python -m pip install --quiet --disable-pip-version-check websockify
           Write-Host "Installed."
 
-      - name: Start the desktop stream (VNC 5900 -> noVNC 6080)
+      # Everything long-lived lives in THIS one step on purpose. The runner tears down a
+      # step's process tree when the step ends, so a bridge started in an earlier step
+      # dies silently — which is exactly what produced a Cloudflare 502 here before.
+      - name: Serve the desktop, publish a public link, and hold it open
+        env:
+          EXPOSE_RDP: ${{ github.event.inputs.expose_rdp }}
         run: |
           function Wait-Port([int]$port, [int]$tries) {
             for ($i = 0; $i -lt $tries; $i++) {
@@ -82,6 +84,15 @@ jobs:
             return $false
           }
 
+          function Start-Bridge {
+            # Own the bridge's lifetime from here so the watchdog can revive it.
+            $script:ws = Start-Process python `
+              -ArgumentList '-m','websockify','--web=C:\novnc','6080','127.0.0.1:5900' `
+              -WindowStyle Hidden -PassThru `
+              -RedirectStandardOutput C:\ws.out.log -RedirectStandardError C:\ws.err.log
+          }
+
+          # --- VNC: runs as a Windows service, so it outlives step boundaries ---
           Restart-Service tvnserver -ErrorAction SilentlyContinue
           if (-not (Wait-Port 5900 30)) {
             Get-Service tvnserver | Format-List *
@@ -89,20 +100,15 @@ jobs:
           }
           Write-Host "VNC is up on 5900"
 
-          Start-Process python `
-            -ArgumentList '-m','websockify','--web=C:\novnc','6080','127.0.0.1:5900' `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput C:\ws.out.log -RedirectStandardError C:\ws.err.log
+          # --- noVNC bridge ---
+          Start-Bridge
           if (-not (Wait-Port 6080 30)) {
             Get-Content C:\ws.err.log -ErrorAction SilentlyContinue
             throw "websockify never started listening on 6080"
           }
           Write-Host "noVNC is up on 6080"
 
-      - name: Public link (Cloudflare) — LINK IS IN THE SUMMARY TAB
-        env:
-          EXPOSE_RDP: ${{ github.event.inputs.expose_rdp }}
-        run: |
+          # --- Cloudflare tunnels ---
           Invoke-WebRequest -UseBasicParsing `
             -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
             -OutFile C:\cloudflared.exe
@@ -117,7 +123,6 @@ jobs:
             return ''
           }
 
-          # Browser desktop tunnel
           $web = Start-Process C:\cloudflared.exe `
             -ArgumentList 'tunnel','--no-autoupdate','--url','http://localhost:6080' `
             -PassThru -WindowStyle Hidden `
@@ -127,6 +132,7 @@ jobs:
 
           # Optional RDP tunnel (default on; skipped only if explicitly set to false)
           $rdpUrl = ''
+          $rdp = $null
           if ($env:EXPOSE_RDP -ne 'false') {
             $rdp = Start-Process C:\cloudflared.exe `
               -ArgumentList 'tunnel','--no-autoupdate','--url','tcp://localhost:3389' `
@@ -135,6 +141,7 @@ jobs:
             $rdpUrl = Get-TunnelUrl @('C:\cf-rdp.err','C:\cf-rdp.out')
           }
 
+          # --- Publish the details ---
           $out = New-Object System.Collections.Generic.List[string]
           $out.Add('# 🪟 Windows desktop is live')
           $out.Add('')
@@ -177,12 +184,22 @@ jobs:
           if ($rdpUrl) { Write-Host " RDP HOSTNAME    : $rdpUrl" }
           Write-Host "=================================================="
 
-          # Hold the job open so the desktop stays reachable (under the 6h cap).
+          # --- Hold open, and keep the bridge alive ---
           $end = (Get-Date).AddSeconds(20400)
+          $revives = 0
           while ((Get-Date) -lt $end) {
             if ($web.HasExited) {
               Get-Content C:\cf-web.err,C:\cf-web.out -ErrorAction SilentlyContinue
-              throw "cloudflared exited"
+              throw "cloudflared (web) exited"
+            }
+            if ($rdp -and $rdp.HasExited) { Write-Host "RDP tunnel exited; continuing without it."; $rdp = $null }
+
+            # Revive the browser bridge if it ever died — a dead bridge = Cloudflare 502.
+            if (-not (Wait-Port 6080 1)) {
+              $revives++
+              Write-Host "Bridge on 6080 is down (revive #$revives) — restarting websockify"
+              if ($revives -le 5) { Start-Bridge; [void](Wait-Port 6080 10) }
+              else { Write-Host "Too many revives; last stderr:"; Get-Content C:\ws.err.log -ErrorAction SilentlyContinue | Select-Object -Last 20 }
             }
             Start-Sleep -Seconds 15
           }

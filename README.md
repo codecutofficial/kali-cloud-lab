@@ -8,8 +8,7 @@ Ephemeral by design: a GitHub Actions job is capped at **6 hours**, then everyth
 
 ## How to use it
 
-1. Runs automatically on every push to `main`. To start one manually:
-   **Actions → "Kali Linux GUI (LinuxServer desktop via Cloudflare)" → Run workflow**.
+1. **Actions → "Kali Linux GUI (LinuxServer desktop via Cloudflare)" → Run workflow** → branch `main` → **Run workflow**. (Manual only — a push never starts a box.)
 2. First run takes **~5–10 min** (it pulls a multi-GB image and boots a full desktop). When it reaches the last step, open the run's **Summary** tab (top of the run page). It shows:
    ```
    🐉 Kali Linux desktop is live
