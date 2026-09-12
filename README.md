@@ -49,6 +49,20 @@ sudo apt install -y kali-linux-headless                    # full metapackage
 ## What's in here
 
 ```
-.github/workflows/kali-gui.yml   # the whole thing (LinuxServer Kali desktop + cloudflared)
+.github/workflows/kali-gui.yml        # Kali Linux desktop (LinuxServer image + cloudflared)
+.github/workflows/windows-desktop.yml # Windows Server desktop (TightVNC + noVNC + cloudflared)
+windows/                              # Windows lab guide + tools.ps1
 README.md
 ```
+
+Two separate labs, each with its own workflow and its own `concurrency` group — so a Kali box and
+a Windows box can run **at the same time** without cancelling each other.
+
+### 🪟 Windows lab
+
+A temporary **Windows Server desktop in your browser**, on GitHub's native `windows-latest` runner
+(no download needed — it's already Windows). See **[windows/README.md](windows/README.md)**.
+
+Start it: **Actions → "Windows Desktop (noVNC via Cloudflare)" → Run workflow**, wait ~3–5 min,
+then take the link + passwords from that run's **Summary** tab. There's also an optional
+full-speed **RDP** tunnel for a proper desktop experience.

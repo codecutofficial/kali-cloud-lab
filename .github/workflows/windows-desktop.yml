@@ -1,0 +1,189 @@
+name: Windows Desktop (noVNC via Cloudflare)
+
+# GitHub Actions already runs on real Windows Server runners, so nothing has to be
+# "downloaded" — we just stream the runner's own desktop out. TightVNC serves the
+# already-logged-in console session, noVNC/websockify wraps it for the browser, and a
+# Cloudflare quick tunnel makes it public (no account, no secrets). Optionally also
+# exposes real RDP over a cloudflared TCP tunnel for a full-speed desktop.
+# The link + passwords land in the run's SUMMARY tab.
+on:
+  workflow_dispatch:
+    inputs:
+      expose_rdp:
+        description: "Also expose full-speed RDP (needs cloudflared on your machine)."
+        type: boolean
+        default: true
+  push:
+    branches: [ main ]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-desktop.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop
+  cancel-in-progress: true
+
+jobs:
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Generate credentials
+        run: |
+          # Ambiguity-free alphabet (no l/1/0/O) — these get typed by hand.
+          $chars = [char[]]'abcdefghijkmnpqrstuvwxyz23456789'
+          $vnc = -join (1..8  | ForEach-Object { $chars | Get-Random })   # TightVNC caps at 8
+          $win = -join (1..12 | ForEach-Object { $chars | Get-Random })
+          "VNCPASS=$vnc"       | Out-File $env:GITHUB_ENV -Append
+          "WINPASS=Aa1!$win"   | Out-File $env:GITHUB_ENV -Append
+          "WINUSER=$env:USERNAME" | Out-File $env:GITHUB_ENV -Append
+          Write-Host "Desktop user is: $env:USERNAME"
+
+      - name: Keep the desktop awake, set a sign-in password, enable RDP
+        run: |
+          # Never blank the screen or sleep — a blanked console session streams as black.
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change standby-timeout-ac 0
+          reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f
+
+          # Give the logged-in runner account a known password, so you can unlock the
+          # session (and sign in over RDP) if it ever locks.
+          net user "$env:WINUSER" "$env:WINPASS"
+
+          # Turn RDP on. NLA off so lightweight clients work through the tunnel.
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          Start-Service TermService -ErrorAction SilentlyContinue
+          Write-Host "RDP enabled."
+
+      - name: Install TightVNC + noVNC
+        run: |
+          choco install tightvnc -y --no-progress --installArguments "ADDLOCAL=Server SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=$env:VNCPASS SET_ACCEPTHTTPCONNECTIONS=1 VALUE_OF_ACCEPTHTTPCONNECTIONS=0"
+          git clone --depth 1 https://github.com/novnc/noVNC.git C:\novnc
+          python -m pip install --quiet --disable-pip-version-check websockify
+          Write-Host "Installed."
+
+      - name: Start the desktop stream (VNC 5900 -> noVNC 6080)
+        run: |
+          function Wait-Port([int]$port, [int]$tries) {
+            for ($i = 0; $i -lt $tries; $i++) {
+              try {
+                $c = New-Object Net.Sockets.TcpClient
+                $c.Connect('127.0.0.1', $port); $c.Close(); return $true
+              } catch { Start-Sleep -Seconds 2 }
+            }
+            return $false
+          }
+
+          Restart-Service tvnserver -ErrorAction SilentlyContinue
+          if (-not (Wait-Port 5900 30)) {
+            Get-Service tvnserver | Format-List *
+            throw "VNC server never started listening on 5900"
+          }
+          Write-Host "VNC is up on 5900"
+
+          Start-Process python `
+            -ArgumentList '-m','websockify','--web=C:\novnc','6080','127.0.0.1:5900' `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput C:\ws.out.log -RedirectStandardError C:\ws.err.log
+          if (-not (Wait-Port 6080 30)) {
+            Get-Content C:\ws.err.log -ErrorAction SilentlyContinue
+            throw "websockify never started listening on 6080"
+          }
+          Write-Host "noVNC is up on 6080"
+
+      - name: Public link (Cloudflare) — LINK IS IN THE SUMMARY TAB
+        env:
+          EXPOSE_RDP: ${{ github.event.inputs.expose_rdp }}
+        run: |
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
+            -OutFile C:\cloudflared.exe
+
+          function Get-TunnelUrl([string[]]$logs) {
+            foreach ($i in 1..45) {
+              Start-Sleep -Seconds 2
+              $m = Select-String -Path $logs -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+              if ($m) { return $m.Matches[0].Value }
+            }
+            return ''
+          }
+
+          # Browser desktop tunnel
+          $web = Start-Process C:\cloudflared.exe `
+            -ArgumentList 'tunnel','--no-autoupdate','--url','http://localhost:6080' `
+            -PassThru -WindowStyle Hidden `
+            -RedirectStandardError C:\cf-web.err -RedirectStandardOutput C:\cf-web.out
+          $url = Get-TunnelUrl @('C:\cf-web.err','C:\cf-web.out')
+          $full = "$url/vnc.html?autoconnect=true&resize=scale&password=$env:VNCPASS"
+
+          # Optional RDP tunnel (default on; skipped only if explicitly set to false)
+          $rdpUrl = ''
+          if ($env:EXPOSE_RDP -ne 'false') {
+            $rdp = Start-Process C:\cloudflared.exe `
+              -ArgumentList 'tunnel','--no-autoupdate','--url','tcp://localhost:3389' `
+              -PassThru -WindowStyle Hidden `
+              -RedirectStandardError C:\cf-rdp.err -RedirectStandardOutput C:\cf-rdp.out
+            $rdpUrl = Get-TunnelUrl @('C:\cf-rdp.err','C:\cf-rdp.out')
+          }
+
+          $out = New-Object System.Collections.Generic.List[string]
+          $out.Add('# 🪟 Windows desktop is live')
+          $out.Add('')
+          if ($url) {
+            $out.Add('## Open the desktop in any browser (autoconnects):')
+            $out.Add('')
+            $out.Add("# $full")
+            $out.Add('')
+            $out.Add("Plain link (type the password yourself): **$url/vnc.html**")
+            $out.Add('')
+            $out.Add("VNC password: ``$env:VNCPASS``")
+          } else {
+            $out.Add('⚠️ Tunnel URL never appeared. cloudflared log:')
+            $out.Add('```')
+            $out.Add(((Get-Content C:\cf-web.err,C:\cf-web.out -ErrorAction SilentlyContinue) -join "`n"))
+            $out.Add('```')
+          }
+          $out.Add('')
+          $out.Add('### Windows sign-in (only needed if the session locks)')
+          $out.Add("- user: ``$env:WINUSER``")
+          $out.Add("- password: ``$env:WINPASS``")
+          if ($rdpUrl) {
+            $out.Add('')
+            $out.Add('### Full-speed RDP (optional, needs cloudflared on your machine)')
+            $out.Add('```')
+            $out.Add("cloudflared access rdp --hostname $rdpUrl --url localhost:33389")
+            $out.Add('```')
+            $out.Add('Then point Remote Desktop at **localhost:33389** with the sign-in above.')
+          }
+          $out.Add('')
+          $out.Add('---')
+          $out.Add('_Real Windows Server runner. Ephemeral: auto-stops at 6h; cancel the run to stop sooner._')
+          ($out -join "`n") | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+          Write-Host "::notice title=Windows desktop link::$full"
+          Write-Host "=================================================="
+          Write-Host " WINDOWS DESKTOP : $full"
+          Write-Host " VNC PASSWORD    : $env:VNCPASS"
+          Write-Host " WINDOWS LOGIN   : $env:WINUSER / $env:WINPASS"
+          if ($rdpUrl) { Write-Host " RDP HOSTNAME    : $rdpUrl" }
+          Write-Host "=================================================="
+
+          # Hold the job open so the desktop stays reachable (under the 6h cap).
+          $end = (Get-Date).AddSeconds(20400)
+          while ((Get-Date) -lt $end) {
+            if ($web.HasExited) {
+              Get-Content C:\cf-web.err,C:\cf-web.out -ErrorAction SilentlyContinue
+              throw "cloudflared exited"
+            }
+            Start-Sleep -Seconds 15
+          }
+          Write-Host "Reached time limit; shutting down."

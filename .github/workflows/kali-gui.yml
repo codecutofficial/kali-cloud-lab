@@ -8,6 +8,9 @@ name: Kali Linux GUI (LinuxServer desktop via Cloudflare)
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'README.md'
+      - '.github/workflows/kali-gui.yml'
   workflow_dispatch:
 
 permissions:
