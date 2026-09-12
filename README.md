@@ -61,11 +61,18 @@ push; you launch them from the Actions tab.
 
 ### 🪟 Windows lab
 
-A temporary **Windows desktop in your browser**, hosted the same way as Kali — Docker
-containers plus cloudflared. A real Windows VM (`dockur/windows`, KVM-accelerated) with
-**Apache Guacamole** rendering its RDP session as HTML5, so it's responsive and auto-fits your
-browser window. **No VNC.** See **[windows/README.md](windows/README.md)**.
+A temporary **Windows VM**, hosted the same way as Kali — Docker containers on a Linux runner.
+A real Windows VM (`dockur/windows`, KVM-accelerated) that you reach two ways:
+
+- **Native Remote Desktop** (`mstsc`) — the fast path. The runner has no inbound IP, so it
+  tunnels port 3389 out through **bore** (zero setup, a `bore.pub:PORT` you paste into `mstsc`)
+  or, if you set a `TS_AUTHKEY` secret, **Tailscale** (a fixed `winlab.<tailnet>.ts.net:3389`
+  that's the same every run and never exposed to the internet).
+- **Browser** — **Apache Guacamole** renders the same RDP session as HTML5 over cloudflared,
+  for when you can't install a client. Slower, since the server re-encodes every frame.
+
+**No VNC.** See **[windows/README.md](windows/README.md)**.
 
 Start it: **Actions → "Windows VM (Guacamole HTML5 via Cloudflare)" → Run workflow**, then take
-the link + logins from that run's **Summary** tab. Windows installs itself first, so the
+the RDP address + logins from that run's **Summary** tab. Windows installs itself first, so the
 desktop is ready after **~15–30 min**.

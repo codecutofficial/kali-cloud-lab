@@ -1,17 +1,21 @@
 # Windows lab
 
-A temporary **Windows desktop in your browser** — hosted the same way as the Kali lab:
-Docker containers on a Linux runner, published through a **Cloudflare quick tunnel**.
+A temporary **Windows VM** — hosted the same way as the Kali lab: Docker containers on a
+Linux runner, reached through an outbound tunnel.
 
-**No VNC anywhere.** The browser gets an **HTML5 RDP** session via
-[Apache Guacamole](https://guacamole.apache.org/), which is why it's responsive, auto-fits
-the resolution to your browser window, and doesn't drop the session.
+Two ways in, and the run gives you both:
+
+- **Native Remote Desktop** (`mstsc`) — the fast one. Use this.
+- **Browser** — HTML5 RDP via [Apache Guacamole](https://guacamole.apache.org/), for when
+  you can't install anything locally. Slower, because the server re-encodes every frame.
+
+**No VNC anywhere.**
 
 ```
 dockur/windows   →  a real Windows VM (KVM-accelerated QEMU), speaking RDP
-guacd            →  Guacamole's RDP proxy
-guacamole        →  renders that RDP session as HTML5        (port 8080)
-cloudflared      →  makes it public
+                       ├─ bore / Tailscale  →  native RDP to your mstsc   ⚡
+                       └─ guacd + guacamole →  HTML5 in a browser   (8080)
+cloudflared      →  makes the browser route public
 ```
 
 > Workflows only run from `.github/workflows/`, so the runnable file is
@@ -26,21 +30,73 @@ cloudflared      →  makes it public
    - **version** — `11l` (Windows 11 LTSC, the default — smallest full desktop), `11`, `10l`,
      `10`, `2022`, `2025`, or `tiny11`.
    - **ram** / **cores** — default `8G` / `4`.
-2. Open the run's **Summary** tab. Within ~2 min it shows your desktop link, the Guacamole
-   login, and a second link for watching the install.
-3. **Windows installs itself first — typically 15–30 min.** The Summary tab adds a
-   "✅ Windows finished installing" line when the desktop is actually ready.
-4. Open the link → sign in with the Guacamole login → click **Windows**.
+2. Open the run's **Summary** tab. Within ~2 min it shows the RDP address, the browser link,
+   and the logins.
+3. **Windows installs itself first — typically 15–30 min.** The Summary adds a
+   "✅ Windows finished installing" line when the desktop actually answers.
+4. Connect with `mstsc` (below) or the browser link.
 
 That wait is the one real cost of this approach. It buys you a genuine VM with a proper
 desktop, instead of a laggy stream of a CI machine's console.
 
-## Full-speed native RDP (optional)
+## ⚡ Native Remote Desktop (recommended — it's the fast one)
 
-The browser session is good, but a native RDP client is better still. Port 3389 is published
-on the runner, so with [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-installed locally you can add a TCP tunnel and point `mstsc` at it. Sign in as `Docker`
-with the Windows password from the Summary tab.
+The browser session re-encodes every frame on the server, which is where the lag comes from.
+A real RDP client talks RDP end to end, sizes itself to your window, and caches bitmaps
+locally. Same VM, dramatically better feel.
+
+The runner sits behind Azure NAT with **no inbound-reachable IP**, so you can't dial it
+directly — no port-forward or firewall rule exists for you to open. Something has to dial
+*out* and relay. The workflow sets up whichever of these is available:
+
+### bore — nothing to install (default)
+
+Already on by default. The Summary tab shows:
+
+```
+bore.pub:41337
+```
+
+Press **Windows key**, type `mstsc`, Enter, and paste that into **Computer**. Sign in as
+`Docker` with the password from the Summary tab.
+
+> It is a `host:port` pair — **not** an `https://` link. Pasting a `trycloudflare.com` URL
+> into `mstsc` gives *"The remote computer name is not valid"*; that link is for a browser.
+
+The catch: **the port is different every run**, so you copy it from the Summary each time.
+`bore.pub` is also a free community relay — if it's having a bad day, the workflow
+reconnects automatically and posts the new port as a warning annotation.
+
+### Tailscale — a fixed address that never changes (optional, free)
+
+If re-copying the port annoys you, this removes that step permanently. One-time setup:
+
+1. Sign up at [tailscale.com](https://tailscale.com) (free, personal use, no card).
+2. Install Tailscale on your PC and sign in. Leave it running — that's the only local step,
+   and you do it **once**, not per run.
+3. Admin console → **Settings → Keys → Generate auth key**. Turn on **Ephemeral** and
+   **Reusable**. Copy the key.
+4. In this repo: **Settings → Secrets and variables → Actions → New repository secret**,
+   named `TS_AUTHKEY`, pasting that key as the value.
+
+From then on every run registers itself as `winlab` and the Summary shows a constant address:
+
+```
+winlab.your-tailnet.ts.net:3389
+```
+
+Save it in `mstsc` once and reuse it forever. It's also **private** — the port is never
+exposed to the internet, only to your own devices, unlike bore and the browser link.
+
+The key is *ephemeral*, so each run's node removes itself from your tailnet afterwards; the
+workflow also runs `tailscale logout` on the way out so the name stays `winlab` rather than
+drifting to `winlab-1`. Keep the key in the repo secret — never in the workflow file.
+
+## Browser route (slower, but zero setup)
+
+The Summary's `trycloudflare.com` link opens the same desktop through Guacamole's HTML5
+client. Sign in with the `guacadmin` password from the Summary, then click **Windows**. Use
+this when you're on a machine where you can't install an RDP client.
 
 ## Stopping it
 
@@ -56,6 +112,10 @@ with the Windows password from the Summary tab.
 - **Public link.** In a public repo the link and passwords sit in publicly viewable run output
   while the job runs. Treat the box as fully exposed — nothing sensitive goes in it. Make the
   repo private if you want the output hidden.
+- **bore.pub is a public relay.** Your RDP port is open to the internet while the run is live,
+  and the password is in the public run output, so assume anyone could reach it. The Windows
+  password is random per run, which is the only thing in front of it. Tailscale avoids this
+  entirely — nothing is internet-exposed there.
 - **GitHub Actions Terms.** Actions is for building/testing/deploying the repo's own software;
   using it as a remote-desktop host is a gray area under GitHub's Acceptable Use Policies. Keep
   it to legitimate, authorized use.

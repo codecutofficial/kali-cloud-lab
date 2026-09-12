@@ -192,30 +192,27 @@ jobs:
           SELECT e.entity_id, c.connection_id, 'READ'::guacamole_object_permission_type
           FROM c, guacamole_entity e
           WHERE e.name = 'guacadmin' AND e.type = 'USER';
-
-          UPDATE guacamole_user
-          SET password_salt = gen_random_bytes(32), password_date = now()
-          WHERE entity_id = (SELECT entity_id FROM guacamole_entity WHERE name='guacadmin' AND type='USER');
-
-          UPDATE guacamole_user
-          SET password_hash = digest(concat('${GUACPASS}', upper(encode(password_salt,'hex'))), 'sha256')
-          WHERE entity_id = (SELECT entity_id FROM guacamole_entity WHERE name='guacadmin' AND type='USER');
           SQL
           docker exec -i guacdb psql -q -v ON_ERROR_STOP=1 -U guacamole -d guacamole_db < /tmp/seed.sql
 
-          # Verify the new password actually authenticates. Guacamole's hashing has changed
-          # across releases, so prove it rather than assume it — and fall back cleanly.
+          # Re-key guacadmin through Guacamole's OWN REST API rather than writing a hash
+          # in SQL. Its salt+hash scheme has changed across releases, so letting the app
+          # compute it is the only reliable way — an earlier SQL version of this silently
+          # left the box on the well-known default password.
+          TOKEN=$(curl -s -d "username=guacadmin&password=guacadmin" \
+            http://localhost:8080/api/tokens | grep -oE '"authToken":"[^"]+' | sed 's/.*:"//' || true)
+          if [ -n "$TOKEN" ]; then
+            curl -s -o /dev/null -X PUT -H "Content-Type: application/json" \
+              -d "{\"oldPassword\":\"guacadmin\",\"newPassword\":\"${GUACPASS}\"}" \
+              "http://localhost:8080/api/session/data/postgresql/users/guacadmin/password?token=${TOKEN}" || true
+          fi
+
+          # Prove the new password works; never just assume it.
           if curl -s -f -d "username=guacadmin&password=${GUACPASS}" \
                   http://localhost:8080/api/tokens | grep -q authToken; then
-            echo "Login verified with the generated password."
+            echo "guacadmin re-keyed and verified."
           else
-            echo "::warning::Generated password did not authenticate; restoring the default."
-            docker exec -i guacdb psql -q -U guacamole -d guacamole_db <<'SQL'
-          UPDATE guacamole_user
-          SET password_hash = decode('CA458A7D494E3BE824F5E1E175A1556C0F8EEF2C2D7DF3633BEC4A29C4411960','hex'),
-              password_salt = decode('FE24ADC5E11E2B25288D1704ABE67A79E342ECC26064CE69C5B3177795A82264','hex')
-          WHERE entity_id = (SELECT entity_id FROM guacamole_entity WHERE name='guacadmin' AND type='USER');
-          SQL
+            echo "::warning::Could not change the Guacamole password — it is still the default 'guacadmin'."
             echo "GUACPASS=guacadmin" >> "$GITHUB_ENV"
           fi
 
@@ -223,7 +220,7 @@ jobs:
       # step's process tree the moment that step ends.
       - name: Publish the public link and hold it open
         env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set -uo pipefail
           sudo wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
@@ -247,63 +244,109 @@ jobs:
           INST=$(tunnel_url /tmp/cf-inst.log)
 
           # ------------------------------------------------------------------
-          # Native RDP over ngrok TCP — the point of this section. A real RDP
-          # client skips Guacamole's decode/re-encode entirely, negotiates the
-          # exact window size, and caches bitmaps locally, so it is far smoother
-          # than anything the browser can do.
+          # Native RDP. A real RDP client skips Guacamole's decode/re-encode
+          # entirely, negotiates the exact window size, and caches bitmaps
+          # locally — far smoother than anything the browser can do.
+          #
+          # The runner sits behind Azure NAT with no inbound-reachable IP, so
+          # it cannot be dialed directly; something has to dial OUT and relay.
+          # Two ways, and we set up whichever is available:
+          #
+          #   bore      - zero setup. Public relay, random port each run.
+          #   Tailscale - needs a TS_AUTHKEY secret, but gives a FIXED
+          #               hostname that never changes between runs.
           # ------------------------------------------------------------------
           RDP_HOST=""
-          if [ -z "${NGROK_AUTHTOKEN:-}" ]; then
-            echo "::warning::No NGROK_AUTHTOKEN secret set — skipping the native RDP tunnel."
-          else
-            curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
-              | sudo tar xz -C /usr/local/bin
-            ngrok config add-authtoken "$NGROK_AUTHTOKEN" > /dev/null 2>&1
-            ngrok tcp 3389 --log stdout > /tmp/ngrok.log 2>&1 &
-            NGROK_PID=$!
+          TS_HOST=""
 
-            for i in $(seq 1 30); do
-              RDP_HOST=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null \
-                | grep -oE '"public_url":"tcp://[^"]+' | head -1 | sed 's/.*tcp:\/\///' || true)
-              [ -n "$RDP_HOST" ] && break
-              sleep 2
+          # --- bore: no account, no card, nothing installed locally ---------
+          BORE_VER=0.6.0
+          curl -sSL "https://github.com/ekzhang/bore/releases/download/v${BORE_VER}/bore-v${BORE_VER}-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar xz -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/bore
+
+          # Writes the pid to a FILE, not a variable: this runs inside $( ), which is a
+          # subshell, so any variable it sets would be lost when that subshell exits.
+          start_bore () {
+            bore local 3389 --to bore.pub > /tmp/bore.log 2>&1 &
+            echo $! > /tmp/bore.pid
+            for i in $(seq 1 20); do
+              p=$(grep -oE 'remote_port[=:" ]*[0-9]+' /tmp/bore.log 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
+              [ -z "$p" ] && p=$(grep -oE 'bore\.pub:[0-9]+' /tmp/bore.log 2>/dev/null | grep -oE '[0-9]+$' | head -1 || true)
+              [ -n "$p" ] && { echo "$p"; return; }
+              sleep 1
             done
-            if [ -n "$RDP_HOST" ]; then
-              echo "Native RDP endpoint: $RDP_HOST"
-            else
-              echo "::warning::ngrok did not report a TCP endpoint."; tail -20 /tmp/ngrok.log || true
-            fi
+          }
+          BORE_PORT=$(start_bore)
+          BORE_PID=$(cat /tmp/bore.pid 2>/dev/null || true)
+          if [ -n "$BORE_PORT" ]; then
+            RDP_HOST="bore.pub:${BORE_PORT}"
+            echo "Native RDP endpoint: $RDP_HOST"
+          else
+            echo "::warning::bore did not report a port."; tail -20 /tmp/bore.log || true
+          fi
+
+          # --- Tailscale: optional, but the address never changes ------------
+          if [ -n "${TS_AUTHKEY:-}" ]; then
+            curl -fsSL https://tailscale.com/install.sh | sh > /dev/null 2>&1
+            sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=winlab --accept-routes \
+              > /tmp/ts.log 2>&1 || { echo "::warning::tailscale up failed"; tail -5 /tmp/ts.log || true; }
+            # Read back the name Tailscale actually assigned — if a previous run's
+            # node is still registered, this one becomes winlab-1, winlab-2, ...
+            TS_HOST=$(sudo tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || true)
+            [ -n "$TS_HOST" ] && echo "Tailscale name: ${TS_HOST}"
           fi
 
           {
             echo "# 🪟 Windows VM"
             echo ""
-            if [ -n "$RDP_HOST" ]; then
-              echo "## ⚡ Fastest: native Remote Desktop (no browser)"
+            echo "Windows is installing (unattended, typically **15–30 min**)."
+            echo "The Summary adds a **✅ ready** line below when the desktop actually answers."
+            echo ""
+            echo "## ⚡ Remote Desktop — paste into \`mstsc\`, NOT a browser"
+            echo ""
+            if [ -n "$TS_HOST" ]; then
+              echo "\`\`\`"
+              echo "${TS_HOST}:3389"
+              echo "\`\`\`"
               echo ""
-              echo "Open **Remote Desktop Connection** (\`mstsc\`) and connect to:"
-              echo ""
-              echo "# ${RDP_HOST}"
-              echo ""
-              echo "Sign in as \`Docker\` / \`${WINPASS}\` — this is full-speed RDP, and it sizes itself to your window."
-              echo ""
-              echo "---"
+              echo "(Tailscale — this address is the same every run.)"
               echo ""
             fi
-            echo "Windows is installing (unattended, typically **15–30 min**)."
-            echo "Watch it here if you like: ${INST}"
+            if [ -n "$RDP_HOST" ]; then
+              echo "\`\`\`"
+              echo "${RDP_HOST}"
+              echo "\`\`\`"
+              echo ""
+              echo "(bore — nothing to install, but **the port changes every run**, so copy it fresh.)"
+              echo ""
+            fi
+            if [ -z "$TS_HOST" ] && [ -z "$RDP_HOST" ]; then
+              echo "_No RDP endpoint came up — use the browser route below._"
+              echo ""
+            fi
+            echo "Sign in as \`Docker\` / \`${WINPASS}\`. Full-speed RDP, sized to your window."
             echo ""
-            echo "## Browser desktop (works once the install finishes):"
+            echo "> Windows key → type \`mstsc\` → Enter → paste the address above into **Computer**."
+            echo "> It is \`host:port\` — **not** an \`https://\` link. Pasting a \`trycloudflare.com\`"
+            echo "> URL here gives \"The remote computer name is not valid\"."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 🐢 Browser desktop — paste into a BROWSER, not mstsc"
             echo ""
             echo "${URL}"
             echo ""
             echo "- Guacamole login: \`guacadmin\` / \`${GUACPASS}\`"
             echo ""
-            echo "_The browser route re-encodes every frame, so it is the slower option. RDP above avoids that._"
+            echo "_This route re-encodes every frame, so it is the slower option._"
+            echo ""
+            echo "Watch the install: ${INST}"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice title=Install progress::${INST}"
-          [ -n "$RDP_HOST" ] && echo "::notice title=Native RDP (ready after install)::${RDP_HOST}  Docker/${WINPASS}"
+          [ -n "$RDP_HOST" ] && echo "::notice title=RDP for mstsc (ready after install)::${RDP_HOST}  Docker/${WINPASS}"
+          [ -n "$TS_HOST" ] && echo "::notice title=RDP via Tailscale (stable)::${TS_HOST}:3389  Docker/${WINPASS}"
           echo "::notice title=Browser desktop (ready after install)::${URL}  guacadmin/${GUACPASS}"
 
           # Wait for Windows to finish installing and answer RDP.
@@ -323,40 +366,59 @@ jobs:
               echo "---"
               echo "## ✅ Windows finished installing — the desktop is live"
               echo ""
-              if [ -n "$RDP_HOST" ]; then
-                echo "### ⚡ Remote Desktop (recommended)"
-                echo ""
-                echo "# ${RDP_HOST}"
-                echo ""
-                echo "Sign in as \`Docker\` / \`${WINPASS}\`."
-                echo ""
-              fi
-              echo "### Browser fallback"
+              echo "### ⚡ Remote Desktop (recommended) — for \`mstsc\`"
+              echo ""
+              [ -n "$TS_HOST" ] && { echo "\`\`\`"; echo "${TS_HOST}:3389"; echo "\`\`\`"; echo ""; }
+              [ -n "$RDP_HOST" ] && { echo "\`\`\`"; echo "${RDP_HOST}"; echo "\`\`\`"; echo ""; }
+              echo "Sign in as \`Docker\` / \`${WINPASS}\`."
+              echo ""
+              echo "### Browser fallback — for a browser"
               echo ""
               echo "${URL}"
               echo ""
               echo "Sign in with \`guacadmin\` / \`${GUACPASS}\`, then click **Windows**."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice title=Windows is READY::${RDP_HOST:-$URL}"
+            echo "::notice title=Windows is READY::${TS_HOST:+${TS_HOST}:3389 }${RDP_HOST:-$URL}"
           else
             echo "::warning::Windows never answered RDP. Recent VM logs:"
             docker logs --tail 60 windows || true
           fi
 
           echo "=================================================="
-          echo " NATIVE RDP : ${RDP_HOST:-<not configured>}   (Docker / ${WINPASS})"
-          echo " BROWSER    : ${URL}   (guacadmin / ${GUACPASS})"
-          echo " WINDOWS    : Docker / ${WINPASS}"
+          echo " RDP (mstsc) : ${RDP_HOST:-<none>}   (Docker / ${WINPASS})"
+          [ -n "$TS_HOST" ] && \
+          echo " RDP (stable): ${TS_HOST}:3389   (Docker / ${WINPASS})"
+          echo " BROWSER     : ${URL}   (guacadmin / ${GUACPASS})"
           echo "=================================================="
+
+          # Leave the tailnet on the way out, so the next run gets the plain
+          # 'winlab' name again instead of winlab-1, winlab-2, ...
+          trap '[ -n "${TS_AUTHKEY:-}" ] && sudo tailscale logout >/dev/null 2>&1 || true' EXIT
 
           # Hold the job open so the desktop stays reachable (under the 6h cap).
           END=$((SECONDS + 20400))
+          BORE_REVIVES=0
           while [ $SECONDS -lt $END ]; do
             if ! kill -0 "$CF_PID" 2>/dev/null; then echo "cloudflared exited:"; cat /tmp/cf-web.log; exit 1; fi
-            if [ -n "${NGROK_PID:-}" ] && ! kill -0 "$NGROK_PID" 2>/dev/null; then
-              echo "::warning::ngrok exited — the native RDP endpoint is gone; browser route still works."
-              tail -20 /tmp/ngrok.log || true
-              NGROK_PID=""
+            # bore.pub is a community relay; if it drops the tunnel, reconnect.
+            # The port is NOT preserved across a reconnect, so shout about the new one.
+            if [ -n "${BORE_PID:-}" ] && ! kill -0 "$BORE_PID" 2>/dev/null; then
+              if [ "$BORE_REVIVES" -lt 10 ]; then
+                BORE_REVIVES=$((BORE_REVIVES + 1))
+                NEWPORT=$(start_bore)
+                BORE_PID=$(cat /tmp/bore.pid 2>/dev/null || true)
+                if [ -n "$NEWPORT" ]; then
+                  RDP_HOST="bore.pub:${NEWPORT}"
+                  echo "::warning title=bore reconnected — NEW RDP address::${RDP_HOST} (revive ${BORE_REVIVES})"
+                  { echo ""; echo "> ⚠️ bore reconnected. New RDP address: \`${RDP_HOST}\`"; } >> "$GITHUB_STEP_SUMMARY"
+                else
+                  echo "::warning::bore died and would not come back; use the browser route."
+                  BORE_PID=""
+                fi
+              else
+                echo "::warning::bore keeps dropping; giving up on it. Browser route still works."
+                BORE_PID=""
+              fi
             fi
             sleep 15
           done
