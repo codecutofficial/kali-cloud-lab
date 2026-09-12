@@ -383,12 +383,34 @@ jobs:
           [ -n "$TS_HOST" ] && echo "::notice title=RDP via Tailscale (stable)::${TS_HOST}:3389  Docker/${WINPASS}"
           echo "::notice title=Browser desktop (ready after install)::${URL}  guacadmin/${GUACPASS}"
 
-          # Wait for Windows to finish installing and answer RDP.
-          echo "Waiting for Windows to answer RDP..."
+          # Wait for Windows to finish installing and actually serve RDP.
+          #
+          # A plain TCP connect is NOT enough: QEMU's user-mode networking accepts the
+          # connection on the host side long before Windows is listening inside the guest,
+          # so port 3389 "answers" throughout the install. Connecting then hangs at
+          # "Configuring remote session" and fails.
+          #
+          # So speak RDP instead: send an X.224 Connection Request and require a
+          # Connection Confirm (0xD0) back. Only the guest's own RDP stack can produce that.
+          echo "Waiting for Windows to answer a real RDP handshake..."
+          cat > /tmp/rdp_probe.py <<'PY'
+          import socket, sys
+          # TPKT header + X.224 Connection Request + RDP_NEG_REQ (TLS | CredSSP)
+          req = bytes.fromhex("030000130ee000000000000100080003000000")
+          try:
+              s = socket.create_connection(("127.0.0.1", 3389), timeout=5)
+              s.sendall(req)
+              r = s.recv(19)
+              s.close()
+          except Exception:
+              sys.exit(1)
+          # Need a TPKT reply whose X.224 code is Connection Confirm.
+          sys.exit(0 if len(r) >= 6 and r[0] == 3 and r[5] == 0xD0 else 1)
+          PY
           READY=0
           for i in $(seq 1 300); do   # up to ~50 min
-            if (exec 3<>/dev/tcp/127.0.0.1/3389) 2>/dev/null; then
-              echo "RDP is answering."; READY=1; break
+            if python3 /tmp/rdp_probe.py 2>/dev/null; then
+              echo "RDP handshake succeeded — Windows is genuinely ready."; READY=1; break
             fi
             if [ $((i % 30)) -eq 0 ]; then echo "  ...still installing ($((i/6)) min)"; docker logs --tail 5 windows 2>&1 || true; fi
             sleep 10

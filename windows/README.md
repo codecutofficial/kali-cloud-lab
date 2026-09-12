@@ -63,8 +63,26 @@ Press **Windows key**, type `mstsc`, Enter, and paste that into **Computer**. Si
 > It is a `host:port` pair — **not** an `https://` link. Pasting a `trycloudflare.com` URL
 > into `mstsc` gives *"The remote computer name is not valid"*; that link is for a browser.
 
-The catch: **the port is different every run**, so you copy it from the Summary each time.
-`bore.pub` is also a free community relay — if it's having a bad day, the workflow
+#### Required one-time PC setup: turn off client-side UDP
+
+Do this once or the connection will hang at *"Configuring remote session…"* and then fail
+with *"This computer can't connect to the remote computer."*
+
+`mstsc` tries to open a **UDP** transport alongside TCP. bore relays **TCP only**, so that
+UDP channel never answers and the client waits on it until it gives up. In an **admin**
+PowerShell:
+
+```powershell
+New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' -Force | Out-Null
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' `
+  -Name fClientDisableUDP -Value 1 -Type DWord
+```
+
+This only affects how your client negotiates transport; TCP-based RDP is unaffected, so it
+is safe to leave set. (Tailscale carries UDP fine and doesn't need this.)
+
+The other catch: **the port is different every run**, so you copy it from the Summary each
+time. `bore.pub` is also a free community relay — if it's having a bad day, the workflow
 reconnects automatically and posts the new port as a warning annotation.
 
 ### Tailscale — a fixed address that never changes (optional, free)
