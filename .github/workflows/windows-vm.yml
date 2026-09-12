@@ -86,7 +86,7 @@ jobs:
             -e VERSION="$VERSION" \
             -e RAM_SIZE="$RAM_SIZE" \
             -e CPU_CORES="$CPU_CORES" \
-            -e DISK_SIZE=32G \
+            -e DISK_SIZE=64G \
             -e USERNAME=Docker \
             -e PASSWORD="$WINPASS" \
             --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
