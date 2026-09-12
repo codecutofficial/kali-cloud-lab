@@ -222,6 +222,8 @@ jobs:
       # cloudflared and the hold-open loop MUST share a step: the runner tears down a
       # step's process tree the moment that step ends.
       - name: Publish the public link and hold it open
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
           set -uo pipefail
           sudo wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
@@ -244,24 +246,65 @@ jobs:
           INST_PID=$!
           INST=$(tunnel_url /tmp/cf-inst.log)
 
+          # ------------------------------------------------------------------
+          # Native RDP over ngrok TCP — the point of this section. A real RDP
+          # client skips Guacamole's decode/re-encode entirely, negotiates the
+          # exact window size, and caches bitmaps locally, so it is far smoother
+          # than anything the browser can do.
+          # ------------------------------------------------------------------
+          RDP_HOST=""
+          if [ -z "${NGROK_AUTHTOKEN:-}" ]; then
+            echo "::warning::No NGROK_AUTHTOKEN secret set — skipping the native RDP tunnel."
+          else
+            curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
+              | sudo tar xz -C /usr/local/bin
+            ngrok config add-authtoken "$NGROK_AUTHTOKEN" > /dev/null 2>&1
+            ngrok tcp 3389 --log stdout > /tmp/ngrok.log 2>&1 &
+            NGROK_PID=$!
+
+            for i in $(seq 1 30); do
+              RDP_HOST=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null \
+                | grep -oE '"public_url":"tcp://[^"]+' | head -1 | sed 's/.*tcp:\/\///' || true)
+              [ -n "$RDP_HOST" ] && break
+              sleep 2
+            done
+            if [ -n "$RDP_HOST" ]; then
+              echo "Native RDP endpoint: $RDP_HOST"
+            else
+              echo "::warning::ngrok did not report a TCP endpoint."; tail -20 /tmp/ngrok.log || true
+            fi
+          fi
+
           {
             echo "# 🪟 Windows VM"
             echo ""
-            echo "Windows is installing right now (unattended, typically **15–30 min**)."
+            if [ -n "$RDP_HOST" ]; then
+              echo "## ⚡ Fastest: native Remote Desktop (no browser)"
+              echo ""
+              echo "Open **Remote Desktop Connection** (\`mstsc\`) and connect to:"
+              echo ""
+              echo "# ${RDP_HOST}"
+              echo ""
+              echo "Sign in as \`Docker\` / \`${WINPASS}\` — this is full-speed RDP, and it sizes itself to your window."
+              echo ""
+              echo "---"
+              echo ""
+            fi
+            echo "Windows is installing (unattended, typically **15–30 min**)."
             echo "Watch it here if you like: ${INST}"
             echo ""
-            echo "## Your desktop link (works once the install finishes):"
+            echo "## Browser desktop (works once the install finishes):"
             echo ""
-            echo "# ${URL}"
+            echo "${URL}"
             echo ""
             echo "- Guacamole login: \`guacadmin\` / \`${GUACPASS}\`"
-            echo "- Windows login: \`Docker\` / \`${WINPASS}\`"
             echo ""
-            echo "_HTML5 RDP — no VNC. It auto-fits your browser window._"
+            echo "_The browser route re-encodes every frame, so it is the slower option. RDP above avoids that._"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice title=Install progress::${INST}"
-          echo "::notice title=Windows desktop (ready after install)::${URL}  guacadmin/${GUACPASS}"
+          [ -n "$RDP_HOST" ] && echo "::notice title=Native RDP (ready after install)::${RDP_HOST}  Docker/${WINPASS}"
+          echo "::notice title=Browser desktop (ready after install)::${URL}  guacadmin/${GUACPASS}"
 
           # Wait for Windows to finish installing and answer RDP.
           echo "Waiting for Windows to answer RDP..."
@@ -280,26 +323,41 @@ jobs:
               echo "---"
               echo "## ✅ Windows finished installing — the desktop is live"
               echo ""
-              echo "# ${URL}"
+              if [ -n "$RDP_HOST" ]; then
+                echo "### ⚡ Remote Desktop (recommended)"
+                echo ""
+                echo "# ${RDP_HOST}"
+                echo ""
+                echo "Sign in as \`Docker\` / \`${WINPASS}\`."
+                echo ""
+              fi
+              echo "### Browser fallback"
+              echo ""
+              echo "${URL}"
               echo ""
               echo "Sign in with \`guacadmin\` / \`${GUACPASS}\`, then click **Windows**."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice title=Windows is READY::${URL}  guacadmin/${GUACPASS}"
+            echo "::notice title=Windows is READY::${RDP_HOST:-$URL}"
           else
             echo "::warning::Windows never answered RDP. Recent VM logs:"
             docker logs --tail 60 windows || true
           fi
 
           echo "=================================================="
-          echo " DESKTOP   : ${URL}"
-          echo " GUACAMOLE : guacadmin / ${GUACPASS}"
-          echo " WINDOWS   : Docker / ${WINPASS}"
+          echo " NATIVE RDP : ${RDP_HOST:-<not configured>}   (Docker / ${WINPASS})"
+          echo " BROWSER    : ${URL}   (guacadmin / ${GUACPASS})"
+          echo " WINDOWS    : Docker / ${WINPASS}"
           echo "=================================================="
 
           # Hold the job open so the desktop stays reachable (under the 6h cap).
           END=$((SECONDS + 20400))
           while [ $SECONDS -lt $END ]; do
             if ! kill -0 "$CF_PID" 2>/dev/null; then echo "cloudflared exited:"; cat /tmp/cf-web.log; exit 1; fi
+            if [ -n "${NGROK_PID:-}" ] && ! kill -0 "$NGROK_PID" 2>/dev/null; then
+              echo "::warning::ngrok exited — the native RDP endpoint is gone; browser route still works."
+              tail -20 /tmp/ngrok.log || true
+              NGROK_PID=""
+            fi
             sleep 15
           done
           echo "Reached time limit; shutting down."
