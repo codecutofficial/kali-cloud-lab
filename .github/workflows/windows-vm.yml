@@ -21,7 +21,7 @@ on:
       ram:
         description: "RAM for the VM. The runner has 16G total."
         type: string
-        default: "10G"
+        default: "12G"
       cores:
         description: "CPU cores for the VM. The runner has 4 — leaving one for QEMU's own emulation/IO threads (and bore/cloudflared) is smoother than taking all four."
         type: string
