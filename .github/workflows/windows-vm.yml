@@ -19,13 +19,13 @@ on:
         default: "11l"
         options: [ "11l", "11", "10l", "10", "2022", "2025", "tiny11" ]
       ram:
-        description: "RAM for the VM."
+        description: "RAM for the VM. The runner has 16G total."
         type: string
-        default: "8G"
+        default: "10G"
       cores:
-        description: "CPU cores for the VM."
+        description: "CPU cores for the VM. The runner has 4 — leaving one for QEMU's own emulation/IO threads (and bore/cloudflared) is smoother than taking all four."
         type: string
-        default: "4"
+        default: "3"
 
 permissions:
   contents: read
