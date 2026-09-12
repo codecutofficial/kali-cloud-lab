@@ -67,6 +67,43 @@ jobs:
           python -m pip install --quiet --disable-pip-version-check websockify
           Write-Host "Installed."
 
+      - name: Configure TightVNC (allow loopback — websockify connects over 127.0.0.1)
+        run: |
+          # TightVNC 2.x REJECTS loopback connections by default:
+          #   "Sorry, loopback connections are not enabled"
+          # websockify reaches the VNC server at 127.0.0.1:5900, so every session was
+          # refused. Allow loopback — and ONLY loopback, since the VNC port is never
+          # tunneled (only noVNC on 6080 is public).
+          $reg = 'HKLM:\SOFTWARE\TightVNC\Server'
+          New-Item -Path $reg -Force | Out-Null
+          Set-ItemProperty $reg -Name AllowLoopback          -Value 1    -Type DWord
+          Set-ItemProperty $reg -Name LoopbackOnly           -Value 1    -Type DWord
+          Set-ItemProperty $reg -Name AcceptRfbConnections   -Value 1    -Type DWord
+          Set-ItemProperty $reg -Name RfbPort                -Value 5900 -Type DWord
+          Set-ItemProperty $reg -Name AcceptHttpConnections  -Value 0    -Type DWord
+          Set-ItemProperty $reg -Name AlwaysShared           -Value 1    -Type DWord
+          Set-ItemProperty $reg -Name BlankScreen            -Value 0    -Type DWord
+          Set-ItemProperty $reg -Name RemoveWallpaper        -Value 0    -Type DWord
+          Set-ItemProperty $reg -Name UseVncAuthentication   -Value 1    -Type DWord
+
+          # The installer normally stores the password, but don't depend on it — if it
+          # didn't land, write it ourselves (VNC's DES-obfuscated form, fixed key).
+          $have = (Get-ItemProperty $reg -Name Password -ErrorAction SilentlyContinue).Password
+          if (-not $have) {
+            Write-Host "Installer did not store a password; writing it directly."
+            $data = New-Object byte[] 8
+            $pw   = [Text.Encoding]::ASCII.GetBytes($env:VNCPASS)
+            [Array]::Copy($pw, $data, [Math]::Min(8, $pw.Length))
+            $des = [Security.Cryptography.DES]::Create()
+            $des.Mode = 'ECB'; $des.Padding = 'None'
+            $des.Key  = [byte[]](0xE8,0x4A,0xD6,0x60,0xC4,0x72,0x1A,0xE0)
+            $blob = $des.CreateEncryptor().TransformFinalBlock($data, 0, 8)
+            Set-ItemProperty $reg -Name Password -Value $blob -Type Binary
+          } else {
+            Write-Host "Password already stored by the installer."
+          }
+          Write-Host "TightVNC configured (loopback allowed)."
+
       # Everything long-lived lives in THIS one step on purpose. The runner tears down a
       # step's process tree when the step ends, so a bridge started in an earlier step
       # dies silently — which is exactly what produced a Cloudflare 502 here before.
@@ -99,6 +136,33 @@ jobs:
             throw "VNC server never started listening on 5900"
           }
           Write-Host "VNC is up on 5900"
+
+          # Pre-flight: do a real RFB handshake over loopback, exactly like websockify
+          # will. If the server refuses (e.g. loopback disabled) it replies with zero
+          # security types plus a reason — catch that HERE, in the log, instead of
+          # letting it surface as a red banner in someone's browser.
+          $c = New-Object Net.Sockets.TcpClient
+          $c.Connect('127.0.0.1', 5900)
+          $s = $c.GetStream(); $s.ReadTimeout = 5000
+          $buf = New-Object byte[] 12
+          [void]$s.Read($buf, 0, 12)
+          $ver = [Text.Encoding]::ASCII.GetString($buf).Trim()
+          Write-Host "VNC server greeting: $ver"
+          $s.Write($buf, 0, 12)                      # echo the version back
+          $n = $s.ReadByte()                         # number of security types
+          if ($n -eq 0) {
+            $len = New-Object byte[] 4
+            [void]$s.Read($len, 0, 4)
+            [Array]::Reverse($len)
+            $rlen = [BitConverter]::ToUInt32($len, 0)
+            $rb = New-Object byte[] $rlen
+            [void]$s.Read($rb, 0, $rlen)
+            $reason = [Text.Encoding]::ASCII.GetString($rb)
+            $c.Close()
+            throw "VNC server refused the loopback handshake: $reason"
+          }
+          $c.Close()
+          Write-Host "VNC handshake OK ($n security type(s)) — loopback is accepted."
 
           # --- noVNC bridge ---
           Start-Bridge
