@@ -115,9 +115,19 @@ jobs:
             echo "::error::Guacamole did not come up."; docker logs --tail 100 guacamole; exit 1
           fi
 
+      - name: Check out the OEM tuning scripts
+        uses: actions/checkout@v4
+
       - name: Start the Windows VM
         run: |
           set -euo pipefail
+
+          # dockur runs /storage/oem/install.bat inside the VM during the unattended
+          # install — that's where the redraw/performance tuning gets baked in.
+          mkdir -p /mnt/winstorage/oem
+          cp windows/install.bat /mnt/winstorage/oem/install.bat
+          ls -l /mnt/winstorage/oem/
+
           docker run -d --name windows --network guac \
             -e VERSION="$VERSION" \
             -e RAM_SIZE="$RAM_SIZE" \
@@ -155,12 +165,27 @@ jobs:
               ('password','${WINPASS}'),
               ('security','any'),
               ('ignore-cert','true'),
+              -- Fit the session to whatever the browser window is.
               ('resize-method','display-update'),
-              ('color-depth','32'),
-              ('enable-wallpaper','true'),
-              ('enable-theming','true'),
-              ('enable-font-smoothing','true'),
-              ('enable-full-window-drag','true')
+              ('color-depth','16'),
+              -- Bitmap caching + compression: the single biggest win over a tunnel.
+              ('enable-bitmap-caching','true'),
+              ('enable-offscreen-caching','true'),
+              ('disable-bitmap-caching','false'),
+              ('compression-level','2'),
+              ('enable-gfx','true'),
+              ('force-lossless','false'),
+              ('enable-desktop-composition','true'),
+              ('enable-remote-app','false'),
+              ('disable-glyph-caching','false'),
+              ('disable-offscreen-caching','false'),
+              -- Strip the heavy desktop effects; each one is redraw cost we pay per frame.
+              ('enable-wallpaper','false'),
+              ('enable-theming','false'),
+              ('enable-font-smoothing','false'),
+              ('enable-full-window-drag','false'),
+              ('enable-menu-animations','false'),
+              ('server-layout','en-us-qwerty')
             ) AS t(k,v)
           )
           INSERT INTO guacamole_connection_permission (entity_id, connection_id, permission)
