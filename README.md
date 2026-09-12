@@ -85,20 +85,16 @@ push; you launch them from the Actions tab.
 ### 🪟 Windows lab
 
 A temporary **Windows VM**, hosted the same way as Kali — Docker containers on a Linux runner.
-A real Windows VM (`dockur/windows`, KVM-accelerated) that you reach two ways:
+A real Windows VM (`dockur/windows`, KVM-accelerated) accessible **only through Tailscale** —
+nothing is exposed to the public internet.
 
-- **Native Remote Desktop** (`mstsc`) — the fast path. The runner has no inbound IP, so port
-  3389 is tunnelled out. Every run offers **both** relays and you use whichever you prefer:
-  - **bore** — on by default, nothing to install. A `bore.pub:PORT` you paste into `mstsc`.
-    The port changes each run, and it needs a one-time client tweak (it relays TCP only).
-  - **Tailscale** — set a `TS_AUTHKEY` secret once and you also get a fixed
-    `winlab.<tailnet>.ts.net:3389`: same address every run, never exposed to the internet,
-    and it carries UDP, so it's usually the smoother of the two.
-- **Browser** — **Apache Guacamole** renders the same RDP session as HTML5 over cloudflared,
-  for when you can't install a client. Slower, since the server re-encodes every frame.
+- **Native Remote Desktop** (`mstsc`) via Tailscale — a fixed `winlab.<tailnet>.ts.net:3389`
+  that never changes between runs. Private to your own devices, carries UDP for RDP's fast
+  path. Requires a one-time `TS_AUTHKEY` repo secret (free, no card).
 
-**No VNC.** See **[windows/README.md](windows/README.md)**.
+**No browser route, no public relay.** See **[windows/README.md](windows/README.md)** and
+**[setup.md](setup.md)** for the full walkthrough.
 
-Start it: **Actions → "Windows VM (Guacamole HTML5 via Cloudflare)" → Run workflow**, then take
-the RDP address + logins from that run's **Summary** tab. Windows installs itself first, so the
+Start it: **Actions → "Windows VM (Tailscale RDP)" → Run workflow**, then take
+the RDP address + password from that run's **Summary** tab. Windows installs itself first, so the
 desktop is ready after **~15–30 min**.

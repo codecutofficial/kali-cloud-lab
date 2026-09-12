@@ -1,21 +1,14 @@
 # Windows lab
 
 A temporary **Windows VM** — hosted the same way as the Kali lab: Docker containers on a
-Linux runner, reached through an outbound tunnel.
+Linux runner, reached through Tailscale.
 
-Two ways in, and the run gives you both:
-
-- **Native Remote Desktop** (`mstsc`) — the fast one. Use this.
-- **Browser** — HTML5 RDP via [Apache Guacamole](https://guacamole.apache.org/), for when
-  you can't install anything locally. Slower, because the server re-encodes every frame.
-
-**No VNC anywhere.**
+**Tailscale only** — nothing is exposed to the public internet. No bore, no Cloudflare,
+no browser route. Only devices on your Tailscale network can reach the VM.
 
 ```
 dockur/windows   →  a real Windows VM (KVM-accelerated QEMU), speaking RDP
-                       ├─ bore / Tailscale  →  native RDP to your mstsc   ⚡
-                       └─ guacd + guacamole →  HTML5 in a browser   (8080)
-cloudflared      →  makes the browser route public
+Tailscale        →  private WireGuard mesh, fixed address every run
 ```
 
 > Workflows only run from `.github/workflows/`, so the runnable file is
@@ -24,116 +17,52 @@ cloudflared      →  makes the browser route public
 
 ---
 
+## Prerequisites
+
+One-time setup — takes ~2 minutes:
+
+1. **Sign up** at [tailscale.com](https://tailscale.com) — free, no card.
+2. **Install Tailscale** on your PC and sign in. Leave it running.
+3. **Generate an auth key**: [Admin console](https://login.tailscale.com/admin/settings/keys)
+   → **Generate auth key** → tick **Ephemeral** + **Reusable** → copy.
+4. **Add repo secret**: repo → **Settings → Secrets and variables → Actions →
+   New repository secret** → name: `TS_AUTHKEY`, value: the key.
+
+Without `TS_AUTHKEY`, the workflow fails immediately.
+
+---
+
 ## Start it
 
-1. **Actions → "Windows VM (Guacamole HTML5 via Cloudflare)" → Run workflow**.
+1. **Actions → "Windows VM (Tailscale RDP)" → Run workflow**.
    - **version** — `11l` (Windows 11 LTSC, the default — smallest full desktop), `11`, `10l`,
      `10`, `2022`, `2025`, or `tiny11`.
-   - **ram** / **cores** — default `8G` / `4`.
-2. Open the run's **Summary** tab. Within ~2 min it shows the RDP address, the browser link,
-   and the logins.
+   - **ram** / **cores** — default `12G` / `3`.
+2. Open the run's **Summary** tab. Within ~2 min it shows the RDP address and password.
 3. **Windows installs itself first — typically 15–30 min.** The Summary adds a
    "✅ Windows finished installing" line when the desktop actually answers.
-4. Connect with `mstsc` (below) or the browser link.
+4. Connect with `mstsc`.
 
-That wait is the one real cost of this approach. It buys you a genuine VM with a proper
-desktop, instead of a laggy stream of a CI machine's console.
+## ⚡ Connecting
 
-## ⚡ Native Remote Desktop (recommended — it's the fast one)
+1. Make sure Tailscale is running on your PC (tray icon → "Connected").
+2. Press **Win key** → type `mstsc` → Enter.
+3. Paste the address from the Summary tab:
+   ```
+   winlab.<your-tailnet>.ts.net:3389
+   ```
+4. Username: `Docker`, password from Summary.
 
-The browser session re-encodes every frame on the server, which is where the lag comes from.
-A real RDP client talks RDP end to end, sizes itself to your window, and caches bitmaps
-locally. Same VM, dramatically better feel.
+This address is **the same every run** — save it in `mstsc` once and reuse it forever.
 
-The runner sits behind Azure NAT with **no inbound-reachable IP**, so you can't dial it
-directly — no port-forward or firewall rule exists for you to open. Something has to dial
-*out* and relay, and there are **two ways to do that**. Every run sets up whichever are
-available and prints both in the Summary, so you can use either one:
-
-| | **bore** | **Tailscale** |
-|---|---|---|
-| Setup | none — always on | sign up once + one repo secret |
-| Address | `bore.pub:PORT`, **changes every run** | `winlab.<tailnet>.ts.net:3389`, **always the same** |
-| Exposure | public relay — open to the internet while live | private to your own devices |
-| Transport | TCP only (needs the UDP tweak below) | TCP **and UDP** — RDP's fast path |
-| Speed | one relay in New Jersey | picks a relay near you |
-| Cost | free | free, no card |
-
-Short version: **bore** if you just want in right now; **Tailscale** if you use this often
-or you're far from the US.
-
-### Option A — bore (nothing to install)
-
-Already on by default. The Summary tab shows:
-
-```
-bore.pub:41337
-```
-
-Press **Windows key**, type `mstsc`, Enter, and paste that into **Computer**. Sign in as
-`Docker` with the password from the Summary tab.
-
-> It is a `host:port` pair — **not** an `https://` link. Pasting a `trycloudflare.com` URL
-> into `mstsc` gives *"The remote computer name is not valid"*; that link is for a browser.
-
-#### Required one-time PC setup: turn off client-side UDP
-
-Do this once or the connection will hang at *"Configuring remote session…"* and then fail
-with *"This computer can't connect to the remote computer."*
-
-`mstsc` tries to open a **UDP** transport alongside TCP. bore relays **TCP only**, so that
-UDP channel never answers and the client waits on it until it gives up. In an **admin**
-PowerShell:
-
-```powershell
-New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' -Force | Out-Null
-Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' `
-  -Name fClientDisableUDP -Value 1 -Type DWord
-```
-
-This only affects how your client negotiates transport; TCP-based RDP is unaffected, so it
-is safe to leave set. **But if you switch to Tailscale, undo it** (set the value to `0`) —
-Tailscale carries UDP, and leaving it disabled throws away the faster path.
-
-The other catch: **the port is different every run**, so you copy it from the Summary each
-time. `bore.pub` is also a free community relay — if it's having a bad day, the workflow
-reconnects automatically and posts the new port as a warning annotation.
-
-### Option B — Tailscale (a fixed address that never changes)
-
-Free, no card. This removes the copy-the-port step permanently **and** is usually the faster
-of the two: it picks a relay near you instead of routing everything through New Jersey, and
-it carries UDP so RDP's fast path actually works. One-time setup:
-
-1. Sign up at [tailscale.com](https://tailscale.com) (free, personal use, no card).
-2. Install Tailscale on your PC and sign in. Leave it running — that's the only local step,
-   and you do it **once**, not per run.
-3. Admin console → **Settings → Keys → Generate auth key**. Turn on **Ephemeral** and
-   **Reusable**. Copy the key.
-4. In this repo: **Settings → Secrets and variables → Actions → New repository secret**,
-   named `TS_AUTHKEY`, pasting that key as the value.
-
-From then on every run registers itself as `winlab` and the Summary shows a constant address:
-
-```
-winlab.your-tailnet.ts.net:3389
-```
-
-Save it in `mstsc` once and reuse it forever. It's also **private** — the port is never
-exposed to the internet, only to your own devices, unlike bore and the browser link.
-
-The key is *ephemeral*, so each run's node removes itself from your tailnet afterwards; the
-workflow also runs `tailscale logout` on the way out so the name stays `winlab` rather than
-drifting to `winlab-1`. Keep the key in the repo secret — never in the workflow file.
-
-> Setting `TS_AUTHKEY` doesn't turn bore off. Both addresses appear in every Summary; use
-> whichever you like on the day.
-
-## Browser route (slower, but zero setup)
-
-The Summary's `trycloudflare.com` link opens the same desktop through Guacamole's HTML5
-client. Sign in with the `guacadmin` password from the Summary, then click **Windows**. Use
-this when you're on a machine where you can't install an RDP client.
+> Tailscale carries **UDP**, so RDP's fast path (bitmap caching + compression) works at
+> full speed. No client-side UDP tweaks needed.
+>
+> **If you previously disabled client-side UDP for bore**, re-enable it:
+> ```powershell
+> Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' `
+>   -Name fClientDisableUDP -Value 0 -Type DWord
+> ```
 
 ## Stopping it
 
@@ -146,13 +75,8 @@ this when you're on a machine where you can't install an RDP client.
 ## Notes & caveats
 
 - **Nothing persists.** Every run installs Windows from scratch. This is a throwaway lab.
-- **Public link.** In a public repo the link and passwords sit in publicly viewable run output
-  while the job runs. Treat the box as fully exposed — nothing sensitive goes in it. Make the
-  repo private if you want the output hidden.
-- **bore.pub is a public relay.** Your RDP port is open to the internet while the run is live,
-  and the password is in the public run output, so assume anyone could reach it. The Windows
-  password is random per run, which is the only thing in front of it. Tailscale avoids this
-  entirely — nothing is internet-exposed there.
+- **Private.** Only devices on your Tailscale network can reach the VM. Nothing is exposed
+  to the public internet — no public links, no public relay, no browser route.
 - **GitHub Actions Terms.** Actions is for building/testing/deploying the repo's own software;
   using it as a remote-desktop host is a gray area under GitHub's Acceptable Use Policies. Keep
   it to legitimate, authorized use.
@@ -160,11 +84,12 @@ this when you're on a machine where you can't install an RDP client.
   standard Linux minutes for as long as the box is up.
 - **Windows licensing** is your responsibility — these are Microsoft's own evaluation images,
   unactivated.
+- **Ephemeral nodes.** The key is ephemeral, so each run's node removes itself from your
+  tailnet afterwards; the workflow also runs `tailscale logout` on the way out so the name
+  stays `winlab` rather than drifting to `winlab-1`.
 
 ## Legacy workflow
 
 [`.github/workflows/windows-desktop.yml`](../.github/workflows/windows-desktop.yml) is the
 earlier approach: it streams the **`windows-latest` runner's own console** over TightVNC +
-noVNC. It starts in ~4 min with no install wait, but the stream is laggy, the resolution is
-fixed, and sessions drop — which is exactly why the VM + Guacamole workflow above replaced it.
-Kept only as a fast fallback.
+noVNC. Disabled — kept only as a reference.

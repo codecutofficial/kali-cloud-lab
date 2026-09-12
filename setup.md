@@ -78,13 +78,16 @@ server in **New Jersey**, while Cloudflare picks an **edge near you**.
 
 ## Windows VM
 
-**Workflow**: Actions → **"Windows VM (Guacamole HTML5 via Cloudflare)"** → Run workflow
+**Workflow**: Actions → **"Windows VM (Tailscale RDP)"** → Run workflow
 
-Windows installs itself first — typically **15–30 min**. The Summary shows addresses
+Windows installs itself first — typically **15–30 min**. The Summary shows the address
 immediately, but RDP won't answer until the install finishes (a "Windows finished
-installing" line appears when it's ready). You can watch the install via the browser link.
+installing" line appears when it's ready).
 
-### Method 1 — Tailscale RDP (recommended — fastest)
+**Tailscale only** — nothing is exposed to the public internet. No bore, no Cloudflare,
+no browser route.
+
+### Tailscale RDP (the only method — and the fastest)
 
 | | |
 |---|---|
@@ -111,49 +114,7 @@ installing" line appears when it's ready). You can watch the install via the bro
 
 > Tailscale carries **UDP**, so RDP's fast path (bitmap caching + compression) works at
 > full speed. The address never changes across runs — save it in `mstsc` once.
->
-> **If you previously disabled client-side UDP for bore**, re-enable it for Tailscale:
-> ```powershell
-> Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' `
->   -Name fClientDisableUDP -Value 0 -Type DWord
-> ```
-
-### Method 2 — bore RDP (no setup needed)
-
-| | |
-|---|---|
-| Speed | ⚡⚡⚡⚡ Fast — RDP protocol, but TCP only via New Jersey |
-| Setup | None — always on |
-| Address | `bore.pub:<port>` — **changes every run** |
-| Exposure | Public relay — open to the internet while live |
-| Login | `Docker` / password from Summary |
-
-**How to connect:**
-
-1. Copy the `bore.pub:<port>` from the Summary tab.
-2. Open `mstsc` → paste it into **Computer** → Connect.
-3. Username: `Docker`, password from Summary.
-
-> Requires the same UDP-disable tweak as Kali bore (see above). bore relays TCP only.
-
-### Method 3 — Browser via Guacamole + Cloudflare (zero setup)
-
-| | |
-|---|---|
-| Speed | ⚡⚡ Slowest — server re-encodes every RDP frame as HTML5 |
-| Setup | None — just a browser |
-| Address | `https://<random>.trycloudflare.com` from Summary |
-| Login | `guacadmin` / password from Summary, then click **Windows** |
-
-**How to connect:**
-
-1. Click the `trycloudflare.com` link from the Summary tab.
-2. Sign in: `guacadmin` / password from Summary.
-3. Click **Windows** to open the desktop.
-
-> Use this only when you can't install an RDP client. Every frame is decoded from RDP,
-> re-encoded to H.264, and streamed to your browser — that double-encode is where the
-> lag comes from.
+> No client-side UDP tweak needed (that was only for bore's TCP-only relay).
 
 ---
 
@@ -162,9 +123,8 @@ installing" line appears when it's ready). You can watch the install via the bro
 | Rank | Method | Lab | Why |
 |------|--------|-----|-----|
 | 1 | **Tailscale RDP** | Windows | UDP + nearby relay + native RDP protocol |
-| 2 | **bore RDP** | Kali / Windows | Native RDP, but TCP-only via New Jersey |
+| 2 | **bore RDP** | Kali | Native RDP, but TCP-only via New Jersey |
 | 3 | **Cloudflare browser** | Kali | Cloudflare edge is close, decent H.264 stream |
-| 4 | **Guacamole browser** | Windows | Double re-encode (RDP → H.264 → browser) |
 
 > If you're **far from the US**, Cloudflare browser (Kali) might beat bore RDP because
 > Cloudflare routes through an edge near you. Test both.
@@ -175,13 +135,14 @@ installing" line appears when it's ready). You can watch the install via the bro
 
 | | Kali | Windows |
 |---|---|---|
-| Workflow | "Kali Linux (RDP + browser desktop)" | "Windows VM (Guacamole HTML5 via Cloudflare)" |
+| Workflow | "Kali Linux (RDP + browser desktop)" | "Windows VM (Tailscale RDP)" |
 | Startup time | ~5–10 min | ~15–30 min (Windows install) |
 | RDP user | `abc` | `Docker` |
-| Browser user | `kali` | `guacadmin` |
-| Tailscale | not available | `winlab.<tailnet>.ts.net:3389` |
-| bore | `bore.pub:<port>` | `bore.pub:<port>` |
-| Browser | `trycloudflare.com` link | `trycloudflare.com` link |
+| Browser user | `kali` | n/a |
+| Tailscale | not available | `winlab.<tailnet>.ts.net:3389` (required) |
+| bore | `bore.pub:<port>` | not available |
+| Browser | `trycloudflare.com` link | not available |
+| Public exposure | bore + browser links are public | **none** — Tailscale only |
 | Auto-stop | ~6 hours | ~6 hours |
 | Persists data | no | no |
 
