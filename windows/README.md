@@ -1,89 +1,73 @@
 # Windows lab
 
-A temporary **Windows Server desktop in your browser**, running on GitHub Actions.
+A temporary **Windows desktop in your browser** — hosted the same way as the Kali lab:
+Docker containers on a Linux runner, published through a **Cloudflare quick tunnel**.
 
-Unlike the Kali lab, nothing gets downloaded or installed to *become* Windows — GitHub Actions
-already gives you a **real `windows-latest` runner** (Windows Server 2022/2025, 4 vCPU, 16 GB RAM).
-This lab just streams the desktop that's already sitting there:
+**No VNC anywhere.** The browser gets an **HTML5 RDP** session via
+[Apache Guacamole](https://guacamole.apache.org/), which is why it's responsive, auto-fits
+the resolution to your browser window, and doesn't drop the session.
 
 ```
-runner console session  ──TightVNC──>  :5900  ──websockify/noVNC──>  :6080  ──cloudflared──>  https://<random>.trycloudflare.com
-                        ──RDP────────>  :3389  ──cloudflared (tcp)──>  optional full-speed client
+dockur/windows   →  a real Windows VM (KVM-accelerated QEMU), speaking RDP
+guacd            →  Guacamole's RDP proxy
+guacamole        →  renders that RDP session as HTML5        (port 8080)
+cloudflared      →  makes it public
 ```
 
-Ephemeral: a job is capped at **6 hours**, then everything is destroyed.
-
-> The runnable workflow lives at [`.github/workflows/windows-desktop.yml`](../.github/workflows/windows-desktop.yml)
-> — GitHub only executes workflows from `.github/workflows/`, so it can't live in this folder.
+> Workflows only run from `.github/workflows/`, so the runnable file is
+> [`.github/workflows/windows-vm.yml`](../.github/workflows/windows-vm.yml).
 > This folder holds the docs and helper scripts.
 
 ---
 
 ## Start it
 
-1. **Actions → "Windows Desktop (noVNC via Cloudflare)" → Run workflow** → branch `main` → **Run workflow**.
-2. Wait **~3–5 min**, then open the run's **Summary** tab. It shows:
-   ```
-   🪟 Windows desktop is live
-   Open the desktop in any browser (autoconnects):
-       https://<random>.trycloudflare.com/vnc.html?autoconnect=true&resize=scale&password=<pass>
-   VNC password: <shown here>
+1. **Actions → "Windows VM (Guacamole HTML5 via Cloudflare)" → Run workflow**.
+   - **version** — `11l` (Windows 11 LTSC, the default — smallest full desktop), `11`, `10l`,
+     `10`, `2022`, `2025`, or `tiny11`.
+   - **ram** / **cores** — default `8G` / `4`.
+2. Open the run's **Summary** tab. Within ~2 min it shows your desktop link, the Guacamole
+   login, and a second link for watching the install.
+3. **Windows installs itself first — typically 15–30 min.** The Summary tab adds a
+   "✅ Windows finished installing" line when the desktop is actually ready.
+4. Open the link → sign in with the Guacamole login → click **Windows**.
 
-   Windows sign-in (only needed if the session locks)
-   user: runneradmin   password: <shown here>
-   ```
-3. Click the link → the Windows desktop loads in the tab.
+That wait is the one real cost of this approach. It buys you a genuine VM with a proper
+desktop, instead of a laggy stream of a CI machine's console.
 
-The link and passwords are **new every run**. Always take them from the Summary tab of that run.
+## Full-speed native RDP (optional)
 
-## Full-speed RDP (optional)
-
-noVNC in the browser is fine for clicking around but is slow to redraw. For a real desktop
-experience, the workflow also opens a TCP tunnel for RDP (input `expose_rdp`, on by default).
-You need [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-installed locally, then:
-
-```bash
-cloudflared access rdp --hostname <rdp-hostname-from-summary> --url localhost:33389
-```
-
-Now point any Remote Desktop client at **localhost:33389** and sign in with the Windows
-credentials from the Summary tab.
-
-## Installing tools on the box
-
-Chocolatey is preinstalled on the runner. In a PowerShell window on the desktop:
-
-```powershell
-choco install -y firefox vscode 7zip notepadplusplus
-```
-
-Or run the bundled helper (the repo is checked out on the runner):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File windows\tools.ps1
-```
+The browser session is good, but a native RDP client is better still. Port 3389 is published
+on the runner, so with [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+installed locally you can add a TCP tunnel and point `mstsc` at it. Sign in as `Docker`
+with the Windows password from the Summary tab.
 
 ## Stopping it
 
 - Click **Cancel run** on the run page (or `gh run cancel <id> --repo <owner>/<repo>`).
 - Otherwise it stops itself at ~6h.
-- A new run auto-cancels an older one (`concurrency` group `windows-desktop`), which is
-  **separate** from the Kali group — so a Windows box and a Kali box can run at the same time.
+- Its `concurrency` group is `windows-vm`, separate from Kali's — both labs can run at once.
 
 ---
 
 ## Notes & caveats
 
-- **Black screen / lock screen?** The stream shows the *console session*. The workflow disables
-  sleep, monitor blanking and the lock screen for this reason. If you ever land on a lock screen,
-  sign in with the Windows credentials from the Summary tab.
+- **Nothing persists.** Every run installs Windows from scratch. This is a throwaway lab.
 - **Public link.** In a public repo the link and passwords sit in publicly viewable run output
-  while the job runs, and the desktop account is a local admin. Treat the box as fully exposed —
-  nothing sensitive goes in it. Make the repo private if you want the output hidden.
+  while the job runs. Treat the box as fully exposed — nothing sensitive goes in it. Make the
+  repo private if you want the output hidden.
 - **GitHub Actions Terms.** Actions is for building/testing/deploying the repo's own software;
-  using it as a remote-desktop host is a gray area under GitHub's Acceptable Use Policies. Keep it
-  to legitimate, authorized use.
-- **Minutes.** Public repos get unlimited Actions minutes. On a **private** repo, Windows runners
-  bill at **2× the Linux rate**, so a 6h box burns ~720 minutes of quota.
-- **Nothing persists** between runs.
+  using it as a remote-desktop host is a gray area under GitHub's Acceptable Use Policies. Keep
+  it to legitimate, authorized use.
+- **Minutes.** Public repos get unlimited Actions minutes. On a **private** repo this burns
+  standard Linux minutes for as long as the box is up.
+- **Windows licensing** is your responsibility — these are Microsoft's own evaluation images,
+  unactivated.
+
+## Legacy workflow
+
+[`.github/workflows/windows-desktop.yml`](../.github/workflows/windows-desktop.yml) is the
+earlier approach: it streams the **`windows-latest` runner's own console** over TightVNC +
+noVNC. It starts in ~4 min with no install wait, but the stream is laggy, the resolution is
+fixed, and sessions drop — which is exactly why the VM + Guacamole workflow above replaced it.
+Kept only as a fast fallback.

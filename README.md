@@ -49,19 +49,23 @@ sudo apt install -y kali-linux-headless                    # full metapackage
 
 ```
 .github/workflows/kali-gui.yml        # Kali Linux desktop (LinuxServer image + cloudflared)
-.github/workflows/windows-desktop.yml # Windows Server desktop (TightVNC + noVNC + cloudflared)
+.github/workflows/windows-vm.yml      # Windows VM (dockur/windows + Guacamole HTML5 RDP)
+.github/workflows/windows-desktop.yml # legacy: windows-latest console over noVNC
 windows/                              # Windows lab guide + tools.ps1
 README.md
 ```
 
-Two separate labs, each with its own workflow and its own `concurrency` group — so a Kali box and
-a Windows box can run **at the same time** without cancelling each other.
+Both labs have their own workflow and their own `concurrency` group — so a Kali box and a
+Windows box can run **at the same time** without cancelling each other. Neither starts on a
+push; you launch them from the Actions tab.
 
 ### 🪟 Windows lab
 
-A temporary **Windows Server desktop in your browser**, on GitHub's native `windows-latest` runner
-(no download needed — it's already Windows). See **[windows/README.md](windows/README.md)**.
+A temporary **Windows desktop in your browser**, hosted the same way as Kali — Docker
+containers plus cloudflared. A real Windows VM (`dockur/windows`, KVM-accelerated) with
+**Apache Guacamole** rendering its RDP session as HTML5, so it's responsive and auto-fits your
+browser window. **No VNC.** See **[windows/README.md](windows/README.md)**.
 
-Start it: **Actions → "Windows Desktop (noVNC via Cloudflare)" → Run workflow**, wait ~3–5 min,
-then take the link + passwords from that run's **Summary** tab. There's also an optional
-full-speed **RDP** tunnel for a proper desktop experience.
+Start it: **Actions → "Windows VM (Guacamole HTML5 via Cloudflare)" → Run workflow**, then take
+the link + logins from that run's **Summary** tab. Windows installs itself first, so the
+desktop is ready after **~15–30 min**.
