@@ -72,17 +72,38 @@ reg add "HKLM\SOFTWARE\Microsoft\Avalon.Graphics" /v DisableHWAcceleration /t RE
 reg add "HKLM\SOFTWARE\Wow6432Node\Microsoft\Avalon.Graphics" /v DisableHWAcceleration /t REG_DWORD /d 1 /f 2>nul
 
 REM --- Mesa3D software OpenGL (llvmpipe) -------------------------------------
-set "MESA=\\host.lan\Data\mesa3d\x64"
-if exist "%MESA%\opengl32.dll" (
+REM The workflow downloads Mesa to shared storage. Try multiple known paths.
+set "MESA64="
+set "MESA32="
+for %%D in ("\\host.lan\Data" "D:\Data" "D:\" "C:\OEM") do (
+    if exist "%%~D\mesa3d\x64\opengl32.dll" set "MESA64=%%~D\mesa3d\x64"
+    if exist "%%~D\mesa3d\x86\opengl32.dll" set "MESA32=%%~D\mesa3d\x86"
+)
+
+REM 64-bit Mesa → System32
+if defined MESA64 (
     takeown /f "%SystemRoot%\System32\opengl32.dll" >nul 2>&1
     icacls "%SystemRoot%\System32\opengl32.dll" /grant Administrators:F >nul 2>&1
-    copy /Y "%MESA%\opengl32.dll"       "%SystemRoot%\System32\" 2>nul
-    copy /Y "%MESA%\libgallium_wgl.dll" "%SystemRoot%\System32\" 2>nul
-    copy /Y "%MESA%\libglapi.dll"       "%SystemRoot%\System32\" 2>nul
-    copy /Y "%MESA%\dxil.dll"           "%SystemRoot%\System32\" 2>nul
-    echo Mesa3D software OpenGL installed system-wide
+    copy /Y "%MESA64%\opengl32.dll"       "%SystemRoot%\System32\" 2>nul
+    copy /Y "%MESA64%\libgallium_wgl.dll" "%SystemRoot%\System32\" 2>nul
+    copy /Y "%MESA64%\libglapi.dll"       "%SystemRoot%\System32\" 2>nul
+    copy /Y "%MESA64%\dxil.dll"           "%SystemRoot%\System32\" 2>nul
+    echo Mesa3D x64 installed to System32
 ) else (
-    echo Mesa3D not found on shared storage - OpenGL games use WARP only
+    echo Mesa3D x64 not found
+)
+
+REM 32-bit Mesa → SysWOW64 (for 32-bit games like GTA IV)
+if defined MESA32 (
+    takeown /f "%SystemRoot%\SysWOW64\opengl32.dll" >nul 2>&1
+    icacls "%SystemRoot%\SysWOW64\opengl32.dll" /grant Administrators:F >nul 2>&1
+    copy /Y "%MESA32%\opengl32.dll"       "%SystemRoot%\SysWOW64\" 2>nul
+    copy /Y "%MESA32%\libgallium_wgl.dll" "%SystemRoot%\SysWOW64\" 2>nul
+    copy /Y "%MESA32%\libglapi.dll"       "%SystemRoot%\SysWOW64\" 2>nul
+    copy /Y "%MESA32%\dxil.dll"           "%SystemRoot%\SysWOW64\" 2>nul
+    echo Mesa3D x86 installed to SysWOW64
+) else (
+    echo Mesa3D x86 not found - 32-bit games use WARP only
 )
 
 REM --- Mesa environment variables -------------------------------------------

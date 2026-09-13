@@ -103,6 +103,7 @@ jobs:
             -e RAM_SIZE="$RAM_SIZE" \
             -e CPU_CORES="$CPU_CORES" \
             -e DISK_SIZE=256G \
+            -e ARGUMENTS="-device qxl-vga,vgamem_mb=64" \
             -e USERNAME=Docker \
             -e PASSWORD="$WINPASS" \
             --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
