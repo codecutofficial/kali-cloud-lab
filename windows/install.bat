@@ -60,5 +60,34 @@ reg add "HKCU\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f
 REM --- One more background service worth stopping ----------------------------
 sc config DiagTrack start= disabled 2>nul
 
+REM === FAKE GPU SUPPORT ======================================================
+REM The VM has no physical GPU. These settings enable software rendering and
+REM hide the Remote Desktop session so games don't refuse to launch.
+
+REM --- Hide RDP session from games -------------------------------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v TSUserEnabled /t REG_DWORD /d 0 /f 2>nul
+
+REM --- DirectX WARP software renderer (built into Windows 10/11) -------------
+reg add "HKLM\SOFTWARE\Microsoft\Avalon.Graphics" /v DisableHWAcceleration /t REG_DWORD /d 1 /f 2>nul
+reg add "HKLM\SOFTWARE\Wow6432Node\Microsoft\Avalon.Graphics" /v DisableHWAcceleration /t REG_DWORD /d 1 /f 2>nul
+
+REM --- Mesa3D software OpenGL (llvmpipe) -------------------------------------
+set "MESA=\\host.lan\Data\mesa3d\x64"
+if exist "%MESA%\opengl32.dll" (
+    takeown /f "%SystemRoot%\System32\opengl32.dll" >nul 2>&1
+    icacls "%SystemRoot%\System32\opengl32.dll" /grant Administrators:F >nul 2>&1
+    copy /Y "%MESA%\opengl32.dll"       "%SystemRoot%\System32\" 2>nul
+    copy /Y "%MESA%\libgallium_wgl.dll" "%SystemRoot%\System32\" 2>nul
+    copy /Y "%MESA%\libglapi.dll"       "%SystemRoot%\System32\" 2>nul
+    copy /Y "%MESA%\dxil.dll"           "%SystemRoot%\System32\" 2>nul
+    echo Mesa3D software OpenGL installed system-wide
+) else (
+    echo Mesa3D not found on shared storage - OpenGL games use WARP only
+)
+
+REM --- Mesa environment variables -------------------------------------------
+setx GALLIUM_DRIVER llvmpipe /M 2>nul
+setx MESA_GL_VERSION_OVERRIDE 4.5 /M 2>nul
+
 endlocal
 exit /b 0

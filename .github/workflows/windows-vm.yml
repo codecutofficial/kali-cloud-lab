@@ -75,6 +75,22 @@ jobs:
       - name: Check out the OEM tuning scripts
         uses: actions/checkout@v4
 
+      - name: Download Mesa3D software GPU
+        run: |
+          set -euo pipefail
+          # Mesa3D llvmpipe: software OpenGL 4.5 — games see a real GL driver
+          sudo apt-get install -y -qq p7zip-full > /dev/null 2>&1
+          MESA_VER="24.3.2"
+          curl -fsSL -o /tmp/mesa.7z \
+            "https://github.com/pal1000/mesa-dist-win/releases/download/${MESA_VER}/mesa3d-${MESA_VER}-release-msvc.7z" || {
+            echo "::warning::Mesa3D download failed — WARP software DirectX will still work"
+            exit 0
+          }
+          mkdir -p /mnt/winstorage/mesa3d
+          7z x /tmp/mesa.7z -o/mnt/winstorage/mesa3d -y > /dev/null 2>&1
+          ls /mnt/winstorage/mesa3d/x64/*.dll 2>/dev/null | head -5 || true
+          echo "Mesa3D ${MESA_VER} ready on shared storage"
+
       - name: Start the Windows VM
         run: |
           set -euo pipefail
