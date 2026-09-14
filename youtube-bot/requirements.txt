@@ -1,4 +1,4 @@
-chat-downloader
+pytchat
 pyautogui
 edge-tts
 pygame

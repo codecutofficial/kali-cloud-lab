@@ -158,7 +158,7 @@ if ($pythonExe) {
     Log 'Installing Python packages...'
     try {
         & $pythonExe -m pip install --upgrade pip 2>$null
-        & $pythonExe -m pip install chat-downloader pyautogui edge-tts pygame 2>$null
+        & $pythonExe -m pip install pytchat pyautogui edge-tts pygame 2>$null
         Log 'pip packages installed'
     } catch { Log "pip error: $_" }
 }
