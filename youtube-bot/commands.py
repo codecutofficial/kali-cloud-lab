@@ -7,8 +7,7 @@ pyautogui.PAUSE = 0.05
 
 BLOCKED_KEYS = frozenset([
     "alt+f4", "ctrl+alt+delete", "ctrl+alt+del",
-    "win", "winleft", "winright", "super",
-    "alt+tab", "ctrl+shift+escape",
+    "ctrl+shift+escape",
 ])
 
 ALLOWED_KEYS = frozenset([
@@ -22,6 +21,7 @@ ALLOWED_KEYS = frozenset([
     "f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12",
     "home","end","pageup","pagedown",
     "insert","capslock","numlock",
+    "win","winleft","winright",
     "+","-","=","[","]",";","'",",",".","/","`","\\",
 ])
 
