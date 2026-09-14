@@ -69,10 +69,27 @@ function Download-File($url, $dest, $name) {
 # Save credentials to Desktop + C:\
 # -------------------------------------------------------------------
 Log 'Writing credentials files...'
-$credFile = Find-Storage '.credentials'
 $password = '(check workflow run)'
-if ($credFile) {
-    try { $password = (Get-Content $credFile -Raw).Trim() } catch {}
+# Search for credentials file across all possible storage paths and filenames
+foreach ($fname in @('credentials.txt', '.credentials')) {
+    foreach ($d in @('\\host.lan\Data', 'D:\Data', 'D:\', 'C:\OEM', '\\host.lan\Data\oem', 'D:\Data\oem', 'D:\oem', 'E:\', 'E:\Data', 'E:\oem')) {
+        $p = Join-Path $d $fname
+        if (Test-Path $p) {
+            try {
+                $pw = (Get-Content $p -Raw).Trim()
+                if ($pw.Length -gt 2) { $password = $pw; Log "Password found at $p"; break }
+            } catch {}
+        }
+    }
+    if ($password -ne '(check workflow run)') { break }
+}
+
+# Fallback: read the password dockur set via Autologon registry key
+if ($password -eq '(check workflow run)') {
+    try {
+        $regPw = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultPassword -ErrorAction Stop).DefaultPassword
+        if ($regPw) { $password = $regPw; Log 'Password found in Winlogon registry' }
+    } catch {}
 }
 
 $credText = @"
