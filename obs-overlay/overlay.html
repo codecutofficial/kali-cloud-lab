@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920,height=1080">
+<title>Stream Overlay</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:1920px; height:1080px; overflow:hidden; background:transparent; font-family:'Segoe UI',system-ui,sans-serif; }
+
+/* HEADER */
+.header {
+  position:absolute; top:0; left:0; right:280px; height:54px;
+  background:linear-gradient(135deg,#0d0d0d 0%,#1a1a2e 100%);
+  border-bottom:2px solid #00f0ff;
+  display:flex; align-items:center; padding:0 24px;
+  z-index:10;
+}
+.header .pulse-dot {
+  width:10px; height:10px; border-radius:50%; background:#ff3e3e;
+  margin-right:12px; animation:pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
+.header h1 {
+  font-size:18px; font-weight:600; color:#fff; letter-spacing:.5px;
+}
+.header h1 span { color:#00f0ff; }
+
+/* RIGHT SIDEBAR — commands */
+.sidebar {
+  position:absolute; top:0; right:0; width:280px; height:100%;
+  background:linear-gradient(180deg,#0d0d0d 0%,#0a0a1a 100%);
+  border-left:2px solid #00f0ff;
+  display:flex; flex-direction:column; z-index:10; overflow:hidden;
+}
+.sidebar-title {
+  padding:14px 16px 10px; font-size:14px; font-weight:700;
+  color:#00f0ff; text-transform:uppercase; letter-spacing:2px;
+  border-bottom:1px solid rgba(0,240,255,.2);
+  text-align:center;
+}
+.cmd-scroll {
+  flex:1; overflow:hidden; position:relative;
+}
+.cmd-track {
+  display:flex; flex-direction:column; gap:8px; padding:12px;
+  animation:scrollUp 30s linear infinite;
+}
+@keyframes scrollUp {
+  0%{transform:translateY(0)} 100%{transform:translateY(-50%)}
+}
+.cmd-card {
+  background:rgba(0,240,255,.06); border:1px solid rgba(0,240,255,.15);
+  border-radius:10px; padding:10px 12px; position:relative; overflow:hidden;
+  transition:border-color .3s;
+}
+.cmd-card::before {
+  content:''; position:absolute; top:-50%; left:-50%; width:200%; height:200%;
+  background:conic-gradient(from 0deg,transparent,rgba(0,240,255,.1),transparent 30%);
+  animation:spin 4s linear infinite;
+}
+@keyframes spin { 100%{transform:rotate(360deg)} }
+.cmd-card .cmd-name {
+  font-size:15px; font-weight:700; color:#fff; font-family:'Consolas','Courier New',monospace;
+  position:relative; z-index:1;
+}
+.cmd-card .cmd-desc {
+  font-size:11px; color:rgba(255,255,255,.5); margin-top:3px;
+  position:relative; z-index:1;
+}
+.cmd-card .cmd-icon {
+  position:absolute; top:8px; right:10px; font-size:18px; z-index:1;
+}
+
+/* Glow line on sidebar */
+.glow-line {
+  position:absolute; top:0; left:-1px; width:2px; height:60px;
+  background:linear-gradient(180deg,transparent,#00f0ff,transparent);
+  animation:glowMove 3s ease-in-out infinite;
+}
+@keyframes glowMove { 0%{top:-60px} 100%{top:100%} }
+
+/* CHAT FEED — bottom-left */
+.chat-feed {
+  position:absolute; bottom:16px; left:16px; width:420px; max-height:340px;
+  display:flex; flex-direction:column-reverse; gap:6px; z-index:10;
+  overflow:hidden;
+}
+.chat-msg {
+  display:flex; align-items:flex-start; gap:10px;
+  background:rgba(0,0,0,.7); backdrop-filter:blur(8px);
+  border:1px solid rgba(0,240,255,.15); border-radius:10px;
+  padding:8px 12px; animation:chatIn .4s ease-out;
+}
+@keyframes chatIn { from{opacity:0;transform:translateX(-30px)} to{opacity:1;transform:translateX(0)} }
+.chat-avatar {
+  width:32px; height:32px; border-radius:50%; border:2px solid #00f0ff;
+  flex-shrink:0; object-fit:cover; background:#222;
+}
+.chat-body { flex:1; min-width:0; }
+.chat-author {
+  font-size:12px; font-weight:700; color:#00f0ff;
+}
+.chat-text {
+  font-size:13px; color:#eee; margin-top:2px; word-wrap:break-word;
+}
+
+/* Animated particles in background */
+.particles {
+  position:absolute; top:0; left:0; width:100%; height:100%;
+  pointer-events:none; z-index:0;
+}
+.particle {
+  position:absolute; width:3px; height:3px; background:#00f0ff;
+  border-radius:50%; opacity:.3; animation:float linear infinite;
+}
+@keyframes float {
+  0%{transform:translateY(100vh) scale(0);opacity:0}
+  10%{opacity:.3}
+  90%{opacity:.3}
+  100%{transform:translateY(-20px) scale(1);opacity:0}
+}
+</style>
+</head>
+<body>
+
+<!-- PARTICLES -->
+<div class="particles" id="particles"></div>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="pulse-dot"></div>
+  <h1>CHAT CONTROLS <span>LIVE</span> — Type commands in chat to control the game!</h1>
+</div>
+
+<!-- RIGHT SIDEBAR -->
+<div class="sidebar">
+  <div class="glow-line"></div>
+  <div class="sidebar-title">Commands</div>
+  <div class="cmd-scroll">
+    <div class="cmd-track" id="cmdTrack">
+      <!-- Duplicated for seamless scroll -->
+    </div>
+  </div>
+</div>
+
+<!-- CHAT FEED -->
+<div class="chat-feed" id="chatFeed"></div>
+
+<script>
+const COMMANDS = [
+  {name:'press:w', desc:'Press W key', icon:'W'},
+  {name:'press:a', desc:'Press A key', icon:'A'},
+  {name:'press:s', desc:'Press S key', icon:'S'},
+  {name:'press:d', desc:'Press D key', icon:'D'},
+  {name:'press:space', desc:'Press spacebar', icon:'_'},
+  {name:'press:enter', desc:'Press Enter', icon:'↵'},
+  {name:'press:escape', desc:'Press Escape', icon:'⎋'},
+  {name:'hold:w:2', desc:'Hold W for 2 sec', icon:'⏳'},
+  {name:'mouse:up', desc:'Move mouse up 50px', icon:'↑'},
+  {name:'mouse:down', desc:'Move mouse down 50px', icon:'↓'},
+  {name:'mouse:left', desc:'Move mouse left 50px', icon:'←'},
+  {name:'mouse:right', desc:'Move mouse right 50px', icon:'→'},
+  {name:'mouse:up:200', desc:'Move mouse up 200px', icon:'⇑'},
+  {name:'click:left', desc:'Left mouse click', icon:'◉'},
+  {name:'click:right', desc:'Right mouse click', icon:'◎'},
+  {name:'type:hello', desc:'Type text', icon:'⌨'},
+  {name:'press:ctrl+s', desc:'Key combo Ctrl+S', icon:'⌘'},
+  {name:'press:win', desc:'Open Start menu', icon:'⊞'},
+];
+
+// Build command cards (duplicated for infinite scroll)
+function buildCommands() {
+  const track = document.getElementById('cmdTrack');
+  const items = [...COMMANDS, ...COMMANDS]; // duplicate
+  track.innerHTML = items.map(c => `
+    <div class="cmd-card">
+      <div class="cmd-icon">${c.icon}</div>
+      <div class="cmd-name">${c.name}</div>
+      <div class="cmd-desc">${c.desc}</div>
+    </div>
+  `).join('');
+}
+buildCommands();
+
+// Build floating particles
+function buildParticles() {
+  const container = document.getElementById('particles');
+  for (let i = 0; i < 25; i++) {
+    const p = document.createElement('div');
+    p.className = 'particle';
+    p.style.left = Math.random()*100 + '%';
+    p.style.animationDuration = (8 + Math.random()*12) + 's';
+    p.style.animationDelay = Math.random()*10 + 's';
+    p.style.width = p.style.height = (2+Math.random()*3) + 'px';
+    container.appendChild(p);
+  }
+}
+buildParticles();
+
+// Live chat feed via YouTube Data API
+const params = new URLSearchParams(window.location.search);
+const API_KEY = params.get('key') || '';
+const VIDEO_ID = params.get('video') || '';
+const MAX_MSGS = 15;
+let chatId = null;
+let pageToken = null;
+let seenIds = new Set();
+
+async function fetchApi(endpoint, qs) {
+  qs.key = API_KEY;
+  const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(qs)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`API ${r.status}`);
+  return r.json();
+}
+
+async function initChat() {
+  if (!API_KEY || !VIDEO_ID) { console.log('No API key or video ID — chat feed disabled'); return; }
+  try {
+    const data = await fetchApi('videos', {part:'liveStreamingDetails', id:VIDEO_ID});
+    const item = (data.items||[])[0];
+    chatId = item?.liveStreamingDetails?.activeLiveChatId;
+    if (!chatId) { console.log('No active live chat'); return; }
+    pollChat();
+  } catch(e) { console.error('Init chat error:', e); }
+}
+
+async function pollChat() {
+  if (!chatId) return;
+  try {
+    const qs = {part:'snippet,authorDetails', liveChatId:chatId, maxResults:50};
+    if (pageToken) qs.pageToken = pageToken;
+    const data = await fetchApi('liveChat/messages', qs);
+    pageToken = data.nextPageToken || null;
+    const interval = data.pollingIntervalMillis || 3000;
+
+    for (const item of (data.items||[])) {
+      if (seenIds.has(item.id)) continue;
+      seenIds.add(item.id);
+      if (seenIds.size > 2000) seenIds = new Set([...seenIds].slice(-1000));
+      const author = item.authorDetails?.displayName || 'Viewer';
+      const avatar = item.authorDetails?.profileImageUrl || '';
+      const text = item.snippet?.textMessageDetails?.messageText || '';
+      if (text) addChatMsg(author, avatar, text);
+    }
+    setTimeout(pollChat, interval);
+  } catch(e) {
+    console.error('Poll error:', e);
+    setTimeout(pollChat, 5000);
+  }
+}
+
+function addChatMsg(author, avatar, text) {
+  const feed = document.getElementById('chatFeed');
+  const el = document.createElement('div');
+  el.className = 'chat-msg';
+  el.innerHTML = `
+    <img class="chat-avatar" src="${avatar}" onerror="this.style.background='#00f0ff'" alt="">
+    <div class="chat-body">
+      <div class="chat-author">${escHtml(author)}</div>
+      <div class="chat-text">${escHtml(text)}</div>
+    </div>
+  `;
+  feed.prepend(el);
+  while (feed.children.length > MAX_MSGS) feed.removeChild(feed.lastChild);
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+initChat();
+</script>
+</body>
+</html>
