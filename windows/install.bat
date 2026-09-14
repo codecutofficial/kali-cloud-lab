@@ -110,5 +110,36 @@ REM --- Mesa environment variables -------------------------------------------
 setx GALLIUM_DRIVER llvmpipe /M 2>nul
 setx MESA_GL_VERSION_OVERRIDE 4.5 /M 2>nul
 
+REM === YOUTUBE CHAT BOT SETUP ================================================
+REM Install Python silently, then pip install the bot dependencies.
+REM The bot scripts are on shared storage at \\host.lan\Data\youtube-bot
+
+echo Installing Python...
+curl -fsSL -o "%TEMP%\python-installer.exe" "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
+if exist "%TEMP%\python-installer.exe" (
+    start /wait "" "%TEMP%\python-installer.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
+    echo Python installed
+) else (
+    echo Python download failed
+)
+
+REM Refresh PATH so pip is available
+set "PATH=%PATH%;C:\Program Files\Python312;C:\Program Files\Python312\Scripts"
+
+REM Install bot dependencies
+set "BOT="
+for %%D in ("\\host.lan\Data" "D:\Data" "D:\") do (
+    if exist "%%~D\youtube-bot\bot.py" set "BOT=%%~D\youtube-bot"
+)
+if defined BOT (
+    pip install chat-downloader pyautogui 2>nul
+    mkdir "%USERPROFILE%\youtube-bot" 2>nul
+    copy /Y "%BOT%\*.py" "%USERPROFILE%\youtube-bot\" 2>nul
+    copy /Y "%BOT%\requirements.txt" "%USERPROFILE%\youtube-bot\" 2>nul
+    echo YouTube bot copied to %USERPROFILE%\youtube-bot
+) else (
+    echo YouTube bot not found on shared storage
+)
+
 endlocal
 exit /b 0

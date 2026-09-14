@@ -96,7 +96,11 @@ jobs:
           set -euo pipefail
           mkdir -p /mnt/winstorage/oem
           cp windows/install.bat /mnt/winstorage/oem/install.bat
-          ls -l /mnt/winstorage/oem/
+
+          # Copy the YouTube chat bot to shared storage so it's accessible inside Windows
+          mkdir -p /mnt/winstorage/youtube-bot
+          cp youtube-bot/*.py youtube-bot/requirements.txt /mnt/winstorage/youtube-bot/
+          ls -l /mnt/winstorage/youtube-bot/
 
           docker run -d --name windows \
             -e VERSION="$VERSION" \
