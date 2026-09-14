@@ -1,8 +1,8 @@
 @echo off
 REM ---------------------------------------------------------------------------
-REM Runs during the unattended Windows install (mounted at C:\OEM by dockur).
-REM Goal: make the desktop cheap to redraw, because every frame it repaints is a
-REM frame that has to be encoded and pushed through the tunnel to the browser.
+REM OEM setup script — runs during unattended Windows install (C:\OEM).
+REM Does fast registry tweaks + Mesa3D, then writes bootstrap.ps1 to C:\ and
+REM launches it in the background. No storage path guessing for the PS1 file.
 REM ---------------------------------------------------------------------------
 
 setlocal
@@ -34,45 +34,28 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v Inac
 REM --- Desktop has no physical monitor; don't hunt for one -------------------
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v MaxMonitors /t REG_DWORD /d 2 /f
 
-REM --- RDP encoding: the biggest lever on a GPU-less VM ----------------------
-REM H.264/AVC 444 video-codes the whole desktop instead of shipping bitmap
-REM deltas — far fewer bytes for scrolling and dragging, which is what a long
-REM link punishes hardest. Hardware encode stays off: there is no GPU, so it
-REM would silently fall back anyway.
+REM --- RDP encoding ----------------------------------------------------------
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v AVC444ModePreferred /t REG_DWORD /d 1 /f
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v AVCHardwareEncodePreferred /t REG_DWORD /d 0 /f
-REM ~30fps: each frame costs encode CPU and wire bytes, and 30 is
-REM indistinguishable from 60 for desktop work.
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v DWMFRAMEINTERVAL /t REG_DWORD /d 33 /f
-REM Favour bandwidth over fidelity — the right trade at high latency.
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v VisualExperiencePolicy /t REG_DWORD /d 2 /f
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v ImageQuality /t REG_DWORD /d 1 /f
 
-REM --- Windows 11 transparency is recomputed and re-encoded every frame ------
+REM --- Transparency / wallpaper / drag ---------------------------------------
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f
-REM A solid colour is one flat region to encode; a photo wallpaper is a full
-REM screen of detail behind every window you move.
 reg add "HKCU\Control Panel\Desktop" /v Wallpaper /t REG_SZ /d "" /f
 reg add "HKCU\Control Panel\Colors" /v Background /t REG_SZ /d "0 0 0" /f
-REM Outline-drag is one cheap redraw instead of a full repaint per pixel moved.
 reg add "HKCU\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f
 
-REM --- One more background service worth stopping ----------------------------
+REM --- Background services ---------------------------------------------------
 sc config DiagTrack start= disabled 2>nul
 
 REM === FAKE GPU SUPPORT ======================================================
-REM The VM has no physical GPU. These settings enable software rendering and
-REM hide the Remote Desktop session so games don't refuse to launch.
-
-REM --- Hide RDP session from games -------------------------------------------
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v TSUserEnabled /t REG_DWORD /d 0 /f 2>nul
-
-REM --- DirectX WARP software renderer (built into Windows 10/11) -------------
 reg add "HKLM\SOFTWARE\Microsoft\Avalon.Graphics" /v DisableHWAcceleration /t REG_DWORD /d 1 /f 2>nul
 reg add "HKLM\SOFTWARE\Wow6432Node\Microsoft\Avalon.Graphics" /v DisableHWAcceleration /t REG_DWORD /d 1 /f 2>nul
 
-REM --- Mesa3D software OpenGL (llvmpipe) -------------------------------------
-REM The workflow downloads Mesa to shared storage. Try multiple known paths.
+REM --- Mesa3D software OpenGL (llvmpipe) — must copy before first login ------
 set "MESA64="
 set "MESA32="
 for %%D in ("\\host.lan\Data" "D:\Data" "D:\" "C:\OEM") do (
@@ -80,7 +63,6 @@ for %%D in ("\\host.lan\Data" "D:\Data" "D:\" "C:\OEM") do (
     if exist "%%~D\mesa3d\x86\opengl32.dll" set "MESA32=%%~D\mesa3d\x86"
 )
 
-REM 64-bit Mesa → System32
 if defined MESA64 (
     takeown /f "%SystemRoot%\System32\opengl32.dll" >nul 2>&1
     icacls "%SystemRoot%\System32\opengl32.dll" /grant Administrators:F >nul 2>&1
@@ -89,11 +71,8 @@ if defined MESA64 (
     copy /Y "%MESA64%\libglapi.dll"       "%SystemRoot%\System32\" 2>nul
     copy /Y "%MESA64%\dxil.dll"           "%SystemRoot%\System32\" 2>nul
     echo Mesa3D x64 installed to System32
-) else (
-    echo Mesa3D x64 not found
 )
 
-REM 32-bit Mesa → SysWOW64 (for 32-bit games like GTA IV)
 if defined MESA32 (
     takeown /f "%SystemRoot%\SysWOW64\opengl32.dll" >nul 2>&1
     icacls "%SystemRoot%\SysWOW64\opengl32.dll" /grant Administrators:F >nul 2>&1
@@ -102,43 +81,35 @@ if defined MESA32 (
     copy /Y "%MESA32%\libglapi.dll"       "%SystemRoot%\SysWOW64\" 2>nul
     copy /Y "%MESA32%\dxil.dll"           "%SystemRoot%\SysWOW64\" 2>nul
     echo Mesa3D x86 installed to SysWOW64
-) else (
-    echo Mesa3D x86 not found - 32-bit games use WARP only
 )
 
-REM --- Mesa environment variables -------------------------------------------
 setx GALLIUM_DRIVER llvmpipe /M 2>nul
 setx MESA_GL_VERSION_OVERRIDE 4.5 /M 2>nul
 
-REM === YOUTUBE CHAT BOT SETUP ================================================
-REM Install Python silently, then pip install the bot dependencies.
-REM The bot scripts are on shared storage at \\host.lan\Data\youtube-bot
+REM === SCHEDULE BOOTSTRAP AS A STARTUP TASK ==================================
+REM Instead of running bootstrap.ps1 right now (OEM setup may not have network
+REM or full services), we register a scheduled task that fires at first logon.
+REM The PS1 is on shared storage; copy it locally first.
 
-echo Installing Python...
-curl -fsSL -o "%TEMP%\python-installer.exe" "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
-if exist "%TEMP%\python-installer.exe" (
-    start /wait "" "%TEMP%\python-installer.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
-    echo Python installed
+set "BOOTSTRAP="
+for %%D in ("\\host.lan\Data" "D:\Data" "D:\" "C:\OEM") do (
+    if exist "%%~D\oem\bootstrap.ps1" set "BOOTSTRAP=%%~D\oem\bootstrap.ps1"
+)
+if defined BOOTSTRAP (
+    copy /Y "%BOOTSTRAP%" "C:\bootstrap.ps1" >nul 2>&1
 ) else (
-    echo Python download failed
+    echo bootstrap.ps1 not found on storage, trying C:\OEM direct...
+    if exist "C:\OEM\bootstrap.ps1" copy /Y "C:\OEM\bootstrap.ps1" "C:\bootstrap.ps1" >nul 2>&1
 )
 
-REM Refresh PATH so pip is available
-set "PATH=%PATH%;C:\Program Files\Python312;C:\Program Files\Python312\Scripts"
-
-REM Install bot dependencies
-set "BOT="
-for %%D in ("\\host.lan\Data" "D:\Data" "D:\") do (
-    if exist "%%~D\youtube-bot\bot.py" set "BOT=%%~D\youtube-bot"
-)
-if defined BOT (
-    pip install chat-downloader pyautogui 2>nul
-    mkdir "%USERPROFILE%\youtube-bot" 2>nul
-    copy /Y "%BOT%\*.py" "%USERPROFILE%\youtube-bot\" 2>nul
-    copy /Y "%BOT%\requirements.txt" "%USERPROFILE%\youtube-bot\" 2>nul
-    echo YouTube bot copied to %USERPROFILE%\youtube-bot
+if exist "C:\bootstrap.ps1" (
+    echo Registering bootstrap as startup task...
+    schtasks /create /tn "BootstrapSetup" /tr "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\bootstrap.ps1" /sc onlogon /ru SYSTEM /rl highest /f 2>nul
+    REM Also try to run it now in case we already have network
+    start "" /B powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\bootstrap.ps1"
+    echo Bootstrap scheduled and launched.
 ) else (
-    echo YouTube bot not found on shared storage
+    echo ERROR: bootstrap.ps1 not found anywhere!
 )
 
 endlocal

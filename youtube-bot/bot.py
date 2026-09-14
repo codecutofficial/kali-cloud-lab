@@ -12,6 +12,7 @@ import time
 from collections import defaultdict
 from chat_downloader import ChatDownloader
 from commands import parse_and_execute
+import tts
 
 GLOBAL_COOLDOWN = 1.5
 PER_USER_COOLDOWN = 2.0
@@ -40,6 +41,7 @@ def on_chat_message(msg: dict) -> None:
         last_global = now
         user_cooldowns[author] = now
         print(f"[{author}] {text}  =>  {result}")
+        tts.speak(f"{author}, {result}")
 
 
 def main() -> None:
@@ -64,6 +66,7 @@ def main() -> None:
     print("  click:right      - right click")
     print("  type:hello       - type text")
     print("")
+    tts.start()
     print("Listening for commands...")
     print("=" * 50)
 

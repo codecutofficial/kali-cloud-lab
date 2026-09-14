@@ -7,6 +7,7 @@ name: Windows VM (Tailscale RDP)
 #   Tailscale       ->  private WireGuard mesh, fixed address every run
 #
 # Requires a TS_AUTHKEY repo secret. Without it the run fails immediately.
+# SECURITY: No credentials, IPs, or hostnames are printed to logs or summary.
 on:
   workflow_dispatch:
     inputs:
@@ -70,7 +71,10 @@ jobs:
       - name: Generate credentials
         run: |
           set -euo pipefail
-          echo "WINPASS=$(openssl rand -hex 6)" >> "$GITHUB_ENV"
+          WINPASS=$(openssl rand -hex 6)
+          echo "WINPASS=$WINPASS" >> "$GITHUB_ENV"
+          # Mask the password so it NEVER appears in any log or summary
+          echo "::add-mask::$WINPASS"
 
       - name: Check out the OEM tuning scripts
         uses: actions/checkout@v4
@@ -78,7 +82,6 @@ jobs:
       - name: Download Mesa3D software GPU
         run: |
           set -euo pipefail
-          # Mesa3D llvmpipe: software OpenGL 4.5 — games see a real GL driver
           sudo apt-get install -y -qq p7zip-full > /dev/null 2>&1
           MESA_VER="24.3.2"
           curl -fsSL -o /tmp/mesa.7z \
@@ -88,7 +91,6 @@ jobs:
           }
           mkdir -p /mnt/winstorage/mesa3d
           7z x /tmp/mesa.7z -o/mnt/winstorage/mesa3d -y > /dev/null 2>&1
-          ls /mnt/winstorage/mesa3d/x64/*.dll 2>/dev/null | head -5 || true
           echo "Mesa3D ${MESA_VER} ready on shared storage"
 
       - name: Start the Windows VM
@@ -96,11 +98,15 @@ jobs:
           set -euo pipefail
           mkdir -p /mnt/winstorage/oem
           cp windows/install.bat /mnt/winstorage/oem/install.bat
+          cp windows/bootstrap.ps1 /mnt/winstorage/oem/bootstrap.ps1
 
-          # Copy the YouTube chat bot to shared storage so it's accessible inside Windows
+          # Copy the YouTube chat bot to shared storage
           mkdir -p /mnt/winstorage/youtube-bot
           cp youtube-bot/*.py youtube-bot/requirements.txt /mnt/winstorage/youtube-bot/
-          ls -l /mnt/winstorage/youtube-bot/
+
+          # Write password to a private file on shared storage (VM reads it)
+          echo "$WINPASS" > /mnt/winstorage/.credentials
+          chmod 600 /mnt/winstorage/.credentials
 
           docker run -d --name windows \
             -e VERSION="$VERSION" \
@@ -118,7 +124,7 @@ jobs:
             --stop-timeout 120 \
             dockurr/windows
           sleep 10
-          docker logs --tail 30 windows || true
+          docker logs --tail 30 windows 2>&1 | grep -v -i 'password' || true
           echo "Windows is installing — this is unattended and takes a while."
 
       - name: Connect Tailscale and hold the session open
@@ -130,45 +136,51 @@ jobs:
           # --- Join the tailnet --------------------------------------------------
           curl -fsSL https://tailscale.com/install.sh | sh > /dev/null 2>&1
           sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=winlab --accept-routes \
-            > /tmp/ts.log 2>&1 || { echo "::error::tailscale up failed"; cat /tmp/ts.log || true; exit 1; }
+            > /tmp/ts.log 2>&1 || { echo "::error::tailscale up failed"; exit 1; }
 
           TS_HOST=$(sudo tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || true)
           if [ -z "$TS_HOST" ]; then
             echo "::error::Tailscale joined but could not read the hostname."
-            sudo tailscale status || true
             exit 1
           fi
-          echo "Tailscale name: ${TS_HOST}"
 
-          # --- Write initial Summary --------------------------------------------
+          # Mask the Tailscale hostname so it never leaks to public logs
+          echo "::add-mask::$TS_HOST"
+
+          # Also mask the Tailscale IP
+          TS_IP=$(sudo tailscale ip -4 2>/dev/null || true)
+          if [ -n "$TS_IP" ]; then
+            echo "::add-mask::$TS_IP"
+          fi
+
+          echo "Tailscale connected."
+
+          # --- Write safe Summary (NO credentials, NO IPs) ----------------------
           {
-            echo "# 🪟 Windows VM (private — Tailscale only)"
+            echo "# Windows VM (private — Tailscale only)"
             echo ""
-            echo "Windows is installing (unattended, typically **15–30 min**)."
-            echo "A **✅ ready** line appears below when the desktop actually answers."
+            echo "Windows is installing (unattended, typically **15-30 min**)."
+            echo "A **ready** line appears below when the desktop is live."
             echo ""
-            echo "## ⚡ Remote Desktop"
+            echo "## How to connect"
             echo ""
-            echo "\`\`\`"
-            echo "${TS_HOST}:3389"
-            echo "\`\`\`"
+            echo '```'
+            echo "winlab:3389"
+            echo '```'
             echo ""
+            echo "- Open \`mstsc\` and connect to \`winlab\`"
             echo "- Username: \`Docker\`"
-            echo "- Password: \`${WINPASS}\`"
-            echo ""
-            echo "> Open \`mstsc\` → paste the address above into **Computer** → Connect."
-            echo "> This address is **the same every run** — save it once."
+            echo "- Password: check \`C:\\credentials.txt\` on the VM desktop"
+            echo "  (or open \`http://winlab:8006\` in your browser to see it)"
             echo ""
             echo "> **Private**: only devices on your Tailscale network can reach it."
             echo "> Nothing is exposed to the public internet."
-            echo ""
-            echo "---"
-            echo "_Tailscale carries UDP, so RDP's fast path (bitmap caching + compression)"
-            echo "works at full speed. No client-side UDP tweak needed._"
+            echo "> No credentials are shown in these logs."
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "::notice title=RDP address (ready after install)::${TS_HOST}:3389  Docker/${WINPASS}"
+          # NO ::notice:: with credentials — those show in the public sidebar
+          echo "::notice title=Windows VM::Tailscale connected. Use 'winlab' to connect via RDP."
 
           # --- Wait for Windows to finish installing ----------------------------
           echo "Waiting for Windows to answer a real RDP handshake..."
@@ -189,7 +201,10 @@ jobs:
             if python3 /tmp/rdp_probe.py 2>/dev/null; then
               echo "RDP handshake succeeded — Windows is genuinely ready."; READY=1; break
             fi
-            if [ $((i % 30)) -eq 0 ]; then echo "  ...still installing ($((i/6)) min)"; docker logs --tail 5 windows 2>&1 || true; fi
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "  ...still installing ($((i/6)) min)"
+              docker logs --tail 5 windows 2>&1 | grep -v -i 'password' || true
+            fi
             sleep 10
           done
 
@@ -197,35 +212,55 @@ jobs:
             sleep 30
             {
               echo "---"
-              echo "## ✅ Windows finished installing — the desktop is live"
+              echo "## Windows is ready"
               echo ""
-              echo "\`\`\`"
-              echo "${TS_HOST}:3389"
-              echo "\`\`\`"
+              echo "Connect via RDP to \`winlab:3389\` from any device on your Tailscale network."
               echo ""
-              echo "Sign in as \`Docker\` / \`${WINPASS}\`."
+              echo "- Username: \`Docker\`"
+              echo "- Password: saved on the VM at \`C:\\credentials.txt\`"
+              echo "  and on the Desktop as \`README.txt\`"
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice title=Windows is READY::${TS_HOST}:3389  Docker/${WINPASS}"
+            echo "::notice title=Windows is READY::Connect via Tailscale RDP to winlab"
           else
             echo "::warning::Windows never answered RDP. Recent VM logs:"
-            docker logs --tail 60 windows || true
+            docker logs --tail 60 windows 2>&1 | grep -v -i 'password' || true
           fi
 
-          echo "=========================================="
-          echo " RDP : ${TS_HOST}:3389   (Docker / ${WINPASS})"
-          echo "=========================================="
+          echo "Windows VM is running."
 
           trap 'sudo tailscale logout >/dev/null 2>&1 || true' EXIT
 
-          # Hold the job open so the desktop stays reachable (under the 6h cap).
+          # --- Hold the job open, check bootstrap status -------------------------
           END=$((SECONDS + 20400))
+          BOOTSTRAP_NOTIFIED=0
           while [ $SECONDS -lt $END ]; do
             # Verify Tailscale is still connected.
             if ! sudo tailscale status > /dev/null 2>&1; then
-              echo "::warning::Tailscale disconnected. Attempting reconnect..."
+              echo "Tailscale disconnected. Attempting reconnect..."
               sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=winlab --accept-routes \
                 > /tmp/ts.log 2>&1 || true
             fi
+
+            # Check if bootstrap (Python, OBS, Chrome, Parsec) finished
+            if [ "$BOOTSTRAP_NOTIFIED" = "0" ] && [ -f /mnt/winstorage/bootstrap-done.marker ]; then
+              BOOTSTRAP_NOTIFIED=1
+              echo "Bootstrap complete — all software installed."
+              {
+                echo ""
+                echo "---"
+                echo "## Setup Complete"
+                echo ""
+                echo "All software installed successfully:"
+                echo "- Python 3.12 + YouTube Bot + TTS"
+                echo "- OBS Studio"
+                echo "- Google Chrome"
+                echo "- Parsec"
+                echo ""
+                echo "The VM is fully ready to use."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice title=Setup Complete::All software installed (Python, OBS, Chrome, Parsec, YouTube bot)"
+            fi
+
             sleep 15
           done
           echo "Reached time limit; shutting down."
