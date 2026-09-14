@@ -1,18 +1,21 @@
 """YouTube Live Chat → Game Controller bot.
 
-Reads chat from a YouTube live stream and translates commands into
-keyboard/mouse input on this machine.
+Uses the official YouTube Data API v3 to read live chat messages
+and translate commands into keyboard/mouse input.
 
 Usage:
-    python bot.py https://www.youtube.com/watch?v=VIDEO_ID
     python bot.py VIDEO_ID
+    python bot.py https://www.youtube.com/watch?v=VIDEO_ID
+
+Requires YOUTUBE_API_KEY environment variable or C:\youtube_api_key.txt
 """
 import sys
 import re
 import json
 import time
-import subprocess
-import threading
+import urllib.request
+import urllib.error
+import urllib.parse
 from collections import defaultdict
 from commands import parse_and_execute
 import tts
@@ -22,6 +25,43 @@ PER_USER_COOLDOWN = 2.0
 
 last_global = 0.0
 user_cooldowns: dict[str, float] = defaultdict(float)
+
+API_BASE = 'https://www.googleapis.com/youtube/v3'
+
+
+def get_api_key() -> str:
+    """Read YouTube API key from env var or file."""
+    import os
+    key = os.environ.get('YOUTUBE_API_KEY', '').strip()
+    if key:
+        return key
+    for path in [r'C:\youtube_api_key.txt', r'C:\credentials\youtube_api_key.txt']:
+        try:
+            with open(path, 'r') as f:
+                key = f.read().strip()
+                if key:
+                    return key
+        except FileNotFoundError:
+            pass
+    print('ERROR: No YouTube API key found.')
+    print('Set YOUTUBE_API_KEY env var or put it in C:\\youtube_api_key.txt')
+    sys.exit(1)
+
+
+def api_get(endpoint: str, params: dict, api_key: str) -> dict:
+    """Make a GET request to the YouTube Data API."""
+    params['key'] = api_key
+    url = f'{API_BASE}/{endpoint}?{urllib.parse.urlencode(params)}'
+    req = urllib.request.Request(url, headers={
+        'Accept': 'application/json',
+    })
+    try:
+        resp = urllib.request.urlopen(req)
+        return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        print(f'API error {e.code}: {body[:500]}')
+        raise
 
 
 def extract_video_id(url: str) -> str:
@@ -36,6 +76,28 @@ def extract_video_id(url: str) -> str:
     if re.match(r'^[a-zA-Z0-9_-]{11}$', url):
         return url
     return url
+
+
+def get_live_chat_id(video_id: str, api_key: str) -> str:
+    """Get the liveChatId for a video."""
+    data = api_get('videos', {
+        'part': 'liveStreamingDetails',
+        'id': video_id,
+    }, api_key)
+
+    items = data.get('items', [])
+    if not items:
+        print(f'ERROR: Video {video_id} not found.')
+        sys.exit(1)
+
+    details = items[0].get('liveStreamingDetails', {})
+    chat_id = details.get('activeLiveChatId')
+    if not chat_id:
+        print('ERROR: No active live chat found.')
+        print('Make sure the stream is LIVE and chat is enabled.')
+        sys.exit(1)
+
+    return chat_id
 
 
 def process_message(author: str, text: str) -> None:
@@ -54,188 +116,86 @@ def process_message(author: str, text: str) -> None:
     if result:
         last_global = now
         user_cooldowns[author] = now
-        print(f"[{author}] {text}  =>  {result}")
-        tts.speak(f"{author}, {result}")
+        print(f'[{author}] {text}  =>  {result}')
+        tts.speak(f'{author}, {result}')
 
 
-def read_chat_ytdlp(video_url: str) -> None:
-    """Use yt-dlp to read live chat in real time."""
-    proc = subprocess.Popen(
-        [
-            'yt-dlp', '--skip-download',
-            '--sub-lang', 'live_chat',
-            '--write-sub', '--sub-format', 'json',
-            '-o', '-',
-            '--no-warnings',
-            '--quiet',
-            video_url,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    # yt-dlp writes live_chat.json with one JSON object per line
-    # Wait for the .json file to appear
-    import glob
-    import os
-
-    # yt-dlp will create a file like VIDEO_ID.live_chat.json
-    time.sleep(5)
-    json_files = glob.glob('*.live_chat.json')
-    if json_files:
-        follow_json_file(json_files[0])
-    else:
-        proc.wait()
-        raise RuntimeError("yt-dlp didn't produce a live_chat file")
-
-
-def follow_json_file(path: str) -> None:
-    """Tail a live_chat.json file as yt-dlp writes to it."""
-    import os
-    with open(path, 'r', encoding='utf-8') as f:
-        while True:
-            line = f.readline()
-            if line:
-                try:
-                    obj = json.loads(line)
-                    actions = obj.get('replayChatItemAction', {}).get('actions', [])
-                    for action in actions:
-                        item = action.get('addChatItemAction', {}).get('item', {})
-                        renderer = item.get('liveChatTextMessageRenderer', {})
-                        if renderer:
-                            author = renderer.get('authorName', {}).get('simpleText', 'unknown')
-                            runs = renderer.get('message', {}).get('runs', [])
-                            text = ''.join(r.get('text', '') for r in runs)
-                            process_message(author, text)
-                except (json.JSONDecodeError, KeyError):
-                    pass
-            else:
-                time.sleep(0.3)
-
-
-def read_chat_polling(video_id: str) -> None:
-    """Fallback: poll YouTube's live chat using raw HTTP."""
-    import urllib.request
-    import urllib.error
-
-    url = f'https://www.youtube.com/watch?v={video_id}'
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-
-    # Fetch the page to get initial chat continuation token
-    req = urllib.request.Request(url, headers=headers)
-    resp = urllib.request.urlopen(req)
-    page = resp.read().decode('utf-8', errors='replace')
-
-    # Extract API key
-    api_key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', page)
-    if not api_key_match:
-        raise RuntimeError('Could not find YouTube API key on page')
-    api_key = api_key_match.group(1)
-
-    # Extract continuation token
-    cont_match = re.search(r'"continuation":"([^"]+)"', page)
-    if not cont_match:
-        raise RuntimeError('Could not find chat continuation token — is this a live stream with chat enabled?')
-    continuation = cont_match.group(1)
-
-    # Extract client version
-    ver_match = re.search(r'"clientVersion":"([^"]+)"', page)
-    client_version = ver_match.group(1) if ver_match else '2.20260914.00.00'
-
-    live_chat_url = f'https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}'
-
-    seen = set()
+def poll_chat(chat_id: str, api_key: str) -> None:
+    """Poll YouTube live chat using the official API."""
+    page_token = None
+    poll_interval = 2.0
 
     while True:
-        body = json.dumps({
-            'context': {
-                'client': {
-                    'clientName': 'WEB',
-                    'clientVersion': client_version,
-                }
-            },
-            'continuation': continuation,
-        }).encode('utf-8')
-
-        req = urllib.request.Request(
-            live_chat_url,
-            data=body,
-            headers={**headers, 'Content-Type': 'application/json'},
-        )
+        params = {
+            'part': 'snippet,authorDetails',
+            'liveChatId': chat_id,
+            'maxResults': 200,
+        }
+        if page_token:
+            params['pageToken'] = page_token
 
         try:
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
+            data = api_get('liveChat/messages', params, api_key)
         except Exception as e:
-            print(f"[Chat poll error: {e}]")
+            print(f'[Poll error: {e}]')
             time.sleep(5)
             continue
 
-        # Update continuation
-        for cont in data.get('continuationContents', {}).get('liveChatContinuation', {}).get('continuations', []):
-            if 'invalidationContinuationData' in cont:
-                continuation = cont['invalidationContinuationData']['continuation']
-            elif 'timedContinuationData' in cont:
-                continuation = cont['timedContinuationData']['continuation']
+        # Use YouTube's recommended polling interval
+        poll_interval = data.get('pollingIntervalMillis', 2000) / 1000.0
+        page_token = data.get('nextPageToken')
 
-        # Process messages
-        actions = data.get('continuationContents', {}).get('liveChatContinuation', {}).get('actions', [])
-        for action in actions:
-            item = action.get('addChatItemAction', {}).get('item', {})
-            renderer = item.get('liveChatTextMessageRenderer', {})
-            if not renderer:
+        for item in data.get('items', []):
+            snippet = item.get('snippet', {})
+            author_details = item.get('authorDetails', {})
+
+            if snippet.get('type') != 'textMessageEvent':
                 continue
 
-            msg_id = renderer.get('id', '')
-            if msg_id in seen:
-                continue
-            seen.add(msg_id)
-            if len(seen) > 5000:
-                seen = set(list(seen)[-2000:])
-
-            author = renderer.get('authorName', {}).get('simpleText', 'unknown')
-            runs = renderer.get('message', {}).get('runs', [])
-            text = ''.join(r.get('text', '') for r in runs)
+            author = author_details.get('displayName', 'unknown')
+            text = snippet.get('textMessageDetails', {}).get('messageText', '')
             process_message(author, text)
 
-        time.sleep(2)
+        time.sleep(poll_interval)
 
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python bot.py <youtube-url-or-video-id>")
+        print('Usage: python bot.py <youtube-url-or-video-id>')
         sys.exit(1)
 
-    raw = sys.argv[1]
-    video_id = extract_video_id(raw)
-    video_url = f'https://www.youtube.com/watch?v={video_id}'
+    video_id = extract_video_id(sys.argv[1])
+    api_key = get_api_key()
 
-    print(f"Connecting to live chat: {video_url}")
-    print(f"Global cooldown: {GLOBAL_COOLDOWN}s | Per-user: {PER_USER_COOLDOWN}s")
-    print("")
-    print("Commands:")
-    print("  press:w          - press W key")
-    print("  press:ctrl+s     - key combo")
-    print("  hold:w:2         - hold W for 2 sec")
-    print("  mouse:up         - move mouse up 50px")
-    print("  mouse:left:200   - move mouse left 200px")
-    print("  click:left       - left click")
-    print("  click:right      - right click")
-    print("  type:hello       - type text")
-    print("")
+    print(f'Video ID: {video_id}')
+    print(f'Global cooldown: {GLOBAL_COOLDOWN}s | Per-user: {PER_USER_COOLDOWN}s')
+    print()
+    print('Commands:')
+    print('  press:w          - press W key')
+    print('  press:ctrl+s     - key combo')
+    print('  hold:w:2         - hold W for 2 sec')
+    print('  mouse:up         - move mouse up 50px')
+    print('  mouse:left:200   - move mouse left 200px')
+    print('  click:left       - left click')
+    print('  click:right      - right click')
+    print('  type:hello       - type text')
+    print()
     tts.start()
-    print("Listening for commands...")
-    print("=" * 50)
+
+    print('Fetching live chat ID...')
+    chat_id = get_live_chat_id(video_id, api_key)
+    print(f'Live chat connected!')
+    print('Listening for commands...')
+    print('=' * 50)
 
     try:
-        read_chat_polling(video_id)
+        poll_chat(chat_id, api_key)
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print('\nStopped.')
     except Exception as e:
-        print(f"Polling method failed: {e}")
-        print("Bot stopped.")
+        print(f'Error: {e}')
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

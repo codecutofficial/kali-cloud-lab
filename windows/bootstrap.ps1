@@ -163,6 +163,16 @@ if ($pythonExe) {
     } catch { Log "pip error: $_" }
 }
 
+# Copy YouTube API key to where the bot reads it
+foreach ($d in @('\\host.lan\Data', 'D:\Data', 'D:\', 'C:\OEM', 'E:\', 'E:\Data')) {
+    $kf = Join-Path $d 'youtube_api_key.txt'
+    if (Test-Path $kf) {
+        Copy-Item $kf 'C:\youtube_api_key.txt' -Force
+        Log "YouTube API key copied from $kf"
+        break
+    }
+}
+
 $botDest = "$env:USERPROFILE\youtube-bot"
 $botFound = $false
 

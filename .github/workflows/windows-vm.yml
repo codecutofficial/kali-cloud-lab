@@ -69,12 +69,18 @@ jobs:
           echo "TS_AUTHKEY is set."
 
       - name: Generate credentials
+        env:
+          YT_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           set -euo pipefail
           WINPASS=$(openssl rand -hex 6)
           echo "WINPASS=$WINPASS" >> "$GITHUB_ENV"
-          # Mask the password so it NEVER appears in any log or summary
           echo "::add-mask::$WINPASS"
+          # Pass YouTube API key to later steps (masked)
+          if [ -n "${YT_API_KEY:-}" ]; then
+            echo "YT_API_KEY=$YT_API_KEY" >> "$GITHUB_ENV"
+            echo "::add-mask::$YT_API_KEY"
+          fi
 
       - name: Check out the OEM tuning scripts
         uses: actions/checkout@v4
@@ -108,6 +114,12 @@ jobs:
           echo "$WINPASS" > /mnt/winstorage/credentials.txt
           echo "$WINPASS" > /mnt/winstorage/oem/credentials.txt
           chmod 600 /mnt/winstorage/credentials.txt /mnt/winstorage/oem/credentials.txt
+
+          # Write YouTube API key if set
+          if [ -n "${YT_API_KEY:-}" ]; then
+            echo "$YT_API_KEY" > /mnt/winstorage/youtube_api_key.txt
+            chmod 600 /mnt/winstorage/youtube_api_key.txt
+          fi
 
           docker run -d --name windows \
             -e VERSION="$VERSION" \
