@@ -163,15 +163,36 @@ if ($pythonExe) {
     } catch { Log "pip error: $_" }
 }
 
-$botSrc = Find-Storage 'youtube-bot\bot.py'
-if ($botSrc) {
-    $botDir = Split-Path $botSrc
-    $dest = "$env:USERPROFILE\youtube-bot"
-    New-Item -ItemType Directory -Path $dest -Force | Out-Null
-    Copy-Item -Path "$botDir\*" -Destination $dest -Force
-    Log "YouTube bot copied to $dest"
-} else {
-    Log 'YouTube bot not found on shared storage'
+$botDest = "$env:USERPROFILE\youtube-bot"
+$botFound = $false
+
+# Try shared storage first (multiple possible mount points)
+foreach ($d in @('\\host.lan\Data', 'D:\Data', 'D:\', 'C:\OEM', 'E:\', 'E:\Data')) {
+    $check = Join-Path $d 'youtube-bot\bot.py'
+    if (Test-Path $check) {
+        $botDir = Split-Path $check
+        New-Item -ItemType Directory -Path $botDest -Force | Out-Null
+        Copy-Item -Path "$botDir\*" -Destination $botDest -Force
+        Log "YouTube bot copied from $botDir"
+        $botFound = $true
+        break
+    }
+}
+
+# Fallback: download from GitHub (repo is public)
+if (-not $botFound) {
+    Log 'Bot not on storage — downloading from GitHub...'
+    New-Item -ItemType Directory -Path $botDest -Force | Out-Null
+    $repo = 'https://raw.githubusercontent.com/codecutofficial/kali-cloud-lab/main/youtube-bot'
+    foreach ($f in @('bot.py','commands.py','tts.py','requirements.txt')) {
+        curl.exe -fsSL -o "$botDest\$f" "$repo/$f" 2>$null
+    }
+    if (Test-Path "$botDest\bot.py") {
+        Log 'YouTube bot downloaded from GitHub'
+        $botFound = $true
+    } else {
+        Log 'YouTube bot download FAILED'
+    }
 }
 
 # ===================================================================
@@ -234,7 +255,7 @@ try {
     if (-not $desktopPath) { $desktopPath = "$env:USERPROFILE\Desktop" }
     $status = @()
     $status += if ($pyOk) { '[OK] Python' } else { '[FAIL] Python' }
-    $status += if ($botSrc) { '[OK] YouTube Bot + TTS' } else { '[FAIL] YouTube Bot' }
+    $status += if ($botFound) { '[OK] YouTube Bot + TTS' } else { '[FAIL] YouTube Bot' }
     $status += if ($obsOk) { '[OK] OBS Studio' } else { '[FAIL] OBS Studio' }
     $status += if ($chromeOk) { '[OK] Google Chrome' } else { '[FAIL] Google Chrome' }
     $status += if ($parsecOk) { '[OK] Parsec' } else { '[FAIL] Parsec' }
