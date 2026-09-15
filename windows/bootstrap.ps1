@@ -164,14 +164,20 @@ if ($pythonExe) {
 }
 
 # Copy YouTube API key to where the bot reads it
+$ytKeyFound = $false
 foreach ($d in @('\\host.lan\Data', 'D:\Data', 'D:\', 'C:\OEM', 'E:\', 'E:\Data')) {
     $kf = Join-Path $d 'youtube_api_key.txt'
     if (Test-Path $kf) {
         Copy-Item $kf 'C:\youtube_api_key.txt' -Force
-        Log "YouTube API key copied from $kf"
+        $apiKey = (Get-Content $kf -Raw).Trim()
+        [Environment]::SetEnvironmentVariable('YOUTUBE_API_KEY', $apiKey, 'Machine')
+        $env:YOUTUBE_API_KEY = $apiKey
+        Log "YouTube API key set from $kf"
+        $ytKeyFound = $true
         break
     }
 }
+if (-not $ytKeyFound) { Log 'YouTube API key not found on storage' }
 
 $botDest = "$env:USERPROFILE\youtube-bot"
 $botFound = $false

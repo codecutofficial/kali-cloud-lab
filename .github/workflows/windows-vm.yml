@@ -106,9 +106,11 @@ jobs:
           cp windows/install.bat /mnt/winstorage/oem/install.bat
           cp windows/bootstrap.ps1 /mnt/winstorage/oem/bootstrap.ps1
 
-          # Copy the YouTube chat bot to shared storage
+          # Copy the YouTube chat bot + overlay to shared storage
           mkdir -p /mnt/winstorage/youtube-bot
           cp youtube-bot/*.py youtube-bot/requirements.txt /mnt/winstorage/youtube-bot/
+          mkdir -p /mnt/winstorage/obs-overlay
+          cp obs-overlay/overlay.html /mnt/winstorage/obs-overlay/overlay.html
 
           # Write password to shared storage (VM reads it from multiple paths)
           echo "$WINPASS" > /mnt/winstorage/credentials.txt
